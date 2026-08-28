@@ -555,8 +555,13 @@ function buildLayer(source) {
     });
   }
   if (source.kind === "tms") {
+    // ESRI World Imagery tops out around z18; letting Leaflet request z19+ produces "no tile" errors.
+    // Cap native zoom so upper zooms stretch the last real tile instead of failing.
+    const isEsri = /server\.arcgisonline\.com/i.test(source.tileUrl);
     return L.tileLayer(source.tileUrl, {
-      tileSize: 256, minZoom: 0, maxZoom: source.maxZoom || 21,
+      tileSize: 256, minZoom: 0,
+      maxZoom: source.maxZoom || 21,
+      maxNativeZoom: isEsri ? 18 : source.maxNativeZoom,
       crossOrigin: "anonymous", attribution: source.attribution || "",
       subdomains: source.subdomains || "abc",
     });
