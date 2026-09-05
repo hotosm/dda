@@ -29,23 +29,29 @@ from rasterio.windows import from_bounds as window_from_bounds
 log = logging.getLogger(__name__)
 
 BING_TEMPLATE = "https://ecn.t{s}.tiles.virtualearth.net/tiles/a{q}.jpeg?g=1"
-# ESRI and some other tile hosts serve a "map data not available" placeholder to non-browser UAs.
-# A common Mozilla UA works for every public XYZ tile server we use.
+# ESRI and some hosts return a placeholder to non-browser UAs; a Mozilla UA bypasses that.
 TMS_USER_AGENT = "Mozilla/5.0 (dda-pipeline; contact: krschap@duck.com)"
 
 
 def fetch_raster(source: str, aoi_geojson: Path, out_path: Path, zoom: int = 19) -> Path:
     """Dispatch to the right backend based on the source URL. Returns `out_path` on success.
-    If `out_path` already exists and is non-empty, returns immediately without re-downloading."""
+    A completed `out_path` skips the fetch; a stray `.part` from a killed prior run is discarded."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists() and out_path.stat().st_size > 0:
         log.info("fetch skipped, output exists: %s (%.1f GB)", out_path, out_path.stat().st_size / 1e9)
         return out_path
+    part_path = out_path.with_suffix(out_path.suffix + ".part")
+    if part_path.exists():
+        log.warning("fetch: discarding stale partial %s", part_path)
+        part_path.unlink()
     if _is_cog_url(source):
-        return _fetch_cog(source, aoi_geojson, out_path)
-    if "virtualearth.net" in source:
-        return _fetch_bing(aoi_geojson, out_path, zoom=zoom)
-    return _fetch_tms(source, aoi_geojson, out_path, zoom=zoom)
+        _fetch_cog(source, aoi_geojson, part_path)
+    elif "virtualearth.net" in source:
+        _fetch_bing(aoi_geojson, part_path, zoom=zoom)
+    else:
+        _fetch_tms(source, aoi_geojson, part_path, zoom=zoom)
+    part_path.replace(out_path)
+    return out_path
 
 
 def _is_cog_url(url: str) -> bool:
@@ -64,15 +70,7 @@ def _load_bbox(aoi_geojson: Path) -> tuple[float, float, float, float]:
 
 
 def _fetch_cog(cog_url: str, aoi_geojson: Path, out_path: Path) -> Path:
-    """Window-read a bbox out of a remote COG into a local uint8 RGB GeoTIFF.
-
-    When the requested AOI extends beyond the COG's actual bounds, we must either intersect
-    the window with the source (and use the intersected transform) or read boundless with a
-    fill value and keep the full window's transform. We do the intersection so the output
-    file stays exactly aligned with real COG data. Without this, `src.window_transform(unclipped)`
-    would return a transform whose top-left is above the data, silently shifting the raster
-    versus its declared geotransform by however many rows the AOI reached beyond the COG.
-    """
+    """Window-read the AOI bbox from a COG; intersect with source bounds so the geotransform stays honest."""
     west, south, east, north = _load_bbox(aoi_geojson)
     # http(s) URLs go through GDAL's /vsicurl/ streaming; /vsi..., s3://, and local paths open directly.
     vsi_url = f"/vsicurl/{cog_url}" if cog_url.startswith(("http://", "https://")) else cog_url
@@ -107,9 +105,7 @@ def _fetch_cog(cog_url: str, aoi_geojson: Path, out_path: Path) -> Path:
 
 
 def _fetch_tms(tms_url: str, aoi_geojson: Path, out_path: Path, zoom: int) -> Path:
-    """Threaded urllib fetch of every XYZ tile inside the AOI's bbox with a Mozilla UA, each
-    written as a georeferenced EPSG:3857 GeoTIFF, then merged. Bypasses geomltoolkits' async
-    downloader so ESRI stops returning its 'map data not available' placeholder tile."""
+    """Threaded urllib fetch of AOI-bbox XYZ tiles with a Mozilla UA so ESRI serves real imagery."""
     west, south, east, north = _load_bbox(aoi_geojson)
     tiles = list(mercantile.tiles(west, south, east, north, zooms=[zoom]))
     if not tiles:

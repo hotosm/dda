@@ -8,7 +8,7 @@ Two ways to run it:
 
 - **One YAML, one command**: write an event config, run `dda run --config <file>`. Recommended
   for full assessments and for reproducibility.
-- **Per-stage commands**: `dda prepare`, `dda buildings`, `dda label`, `dda damage`, `dda publish`.
+- **Per-stage commands**: `dda prepare`, `dda buildings`, `dda damage`, `dda publish`.
   Useful for one-off experiments and for resuming mid-pipeline.
 
 ### 1. Get the AOI
@@ -89,7 +89,7 @@ Full end-to-end:
 dda run --config conf/colombia_eq.yaml
 ```
 
-Stage order: `aoi, prepare, fewshot, buildings, label, damage, publish`.
+Stage order: `aoi, prepare, fewshot, buildings, damage, publish`. Labeling itself lives outside the pipeline; see section 6.
 
 To resume from a specific stage through the end (earlier stages assumed done):
 
@@ -213,8 +213,8 @@ Prints per-class precision, recall, F1, and the confusion matrix.
 | `outputs/<area>/damage.geojson` | damage | final deliverable, one class + confidence per building |
 
 Every building in `damage.geojson` carries: `damage` (class label), `damage_class` (0..3, or
--1 when the model could not assign a class), `confidence`, per-class probabilities, and a
-`review` flag for low-confidence features.
+-1 when the model could not assign a class), and `damage_confidence` (mean model probability of
+the assigned class over the footprint; NaN for no-data rows).
 
 ### Docker
 

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -48,17 +49,28 @@ def coregister(
     calibrate_photometry: bool = True,
     stretch_percentiles: bool = True,
     keep_raw: bool = False,
+    shift_direction: str = "pre_to_post",
 ) -> DriftResult:
-    """Reproject pre, SIFT+RANSAC homography, optional photometric + stretch, write COGs and checkerboard."""
+    """Reproject pre, SIFT+RANSAC homography, optional photometric + stretch, write COGs and checkerboard.
+
+    shift_direction=pre_to_post keeps the post frame authoritative (fAIr on Vantor);
+    post_to_pre keeps the pre frame authoritative (OSM footprints traced against ESRI).
+    """
+    if shift_direction not in ("pre_to_post", "post_to_pre"):
+        raise ValueError(f"shift_direction must be pre_to_post or post_to_pre, got {shift_direction!r}")
     pre_aligned.parent.mkdir(parents=True, exist_ok=True)
     drift_json.parent.mkdir(parents=True, exist_ok=True)
 
     _reproject_onto_post(pre_raw, post_raw, pre_aligned)
     drift = _measure_homography(pre_aligned, post_raw)
-    _apply_homography(pre_aligned, np.asarray(drift.homography, dtype=np.float64))
+    homography = np.asarray(drift.homography, dtype=np.float64)
+    shutil.copyfile(post_raw, post_aligned)
+    if shift_direction == "pre_to_post":
+        _apply_homography(pre_aligned, homography)
+    else:
+        _apply_homography(post_aligned, np.linalg.inv(homography))
     if calibrate_photometry:
-        _apply_photometric_calibration(pre_aligned, post_raw)
-    post_aligned.write_bytes(post_raw.read_bytes())
+        _apply_photometric_calibration(pre_aligned, post_aligned)
     if stretch_percentiles:
         _apply_shared_stretch_from_post(pre_aligned, post_aligned)
     _convert_to_cog(pre_aligned)
@@ -245,10 +257,21 @@ def _apply_photometric_calibration(pre_aligned: Path, post: Path) -> None:
     for b in range(3):
         p = pre_dec[b][valid].astype(np.float32)
         q = post_dec[b][valid].astype(np.float32)
+        p_std, q_std = float(p.std()), float(q.std())
+        if p_std == 0 or q_std == 0:
+            log.warning(
+                "photometric calibration: band %d has zero std (pre=%.3f, post=%.3f); "
+                "offset-only for this band",
+                b,
+                p_std,
+                q_std,
+            )
+            p_std = p_std or 1.0
+            q_std = q_std or p_std
         means_pre.append(float(p.mean()))
-        stds_pre.append(float(p.std()) or 1.0)
+        stds_pre.append(p_std)
         means_post.append(float(q.mean()))
-        stds_post.append(float(q.std()) or 1.0)
+        stds_post.append(q_std)
     log.info(
         "photometric calibration: pre RGB mean=%s std=%s -> post mean=%s std=%s",
         [round(m, 1) for m in means_pre],
@@ -299,6 +322,13 @@ def _compute_stretch_bounds(
         pixels = dec[b][valid].astype(np.float32)
         lo, hi = np.percentile(pixels, [STRETCH_PCT_LOW, STRETCH_PCT_HIGH])
         if hi - lo < 1.0:
+            log.warning(
+                "%s stretch: band %d degenerate percentile range (lo=%.2f hi=%.2f); widening to lo+1",
+                label,
+                b,
+                float(lo),
+                float(hi),
+            )
             hi = lo + 1.0
         lows.append(float(lo))
         highs.append(float(hi))

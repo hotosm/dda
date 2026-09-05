@@ -1,16 +1,12 @@
-"""OmegaConf schema for `dda run --config event.yaml`.
-
-One YAML declares an event end-to-end: AOI source, pre + post imagery, optional fewshot
-adaptation, buildings source, damage config, optional publish target. Loaded via
-`load_event_config(path, overrides=[...])`; overrides use OmegaConf dotlist syntax
-(`buildings.fewshot.hpo_trials=4`).
-"""
+"""OmegaConf schema for `dda run --config event.yaml`; one YAML declares an event end-to-end."""
 
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
 from omegaconf import MISSING, DictConfig, OmegaConf
+
+_VALID_OSM_SOURCES = ("raw_data_api", "postpass")
 
 
 @dataclass
@@ -57,16 +53,52 @@ class EventConfig:
     photometric_calibration: bool = True
     stretch_percentiles: bool = True
     keep_raw: bool = False
+    shift_direction: str = "pre_to_post"
     buildings: BuildingsConfig = field(default_factory=BuildingsConfig)
     damage: DamageConfig = field(default_factory=DamageConfig)
     publish: PublishConfig = field(default_factory=PublishConfig)
 
+    # OSM pull backend when buildings.source == "osm"; mirrors TrainConfig for provenance handoff.
+    osm_source: str = "raw_data_api"
+    osm_tag_families: list[dict[str, str]] = field(
+        default_factory=lambda: [{"key": "building", "status": "standing"}]
+    )
+
+    damage_output_schema: list[str] = field(
+        default_factory=lambda: [
+            "osm_id",
+            "osm_type",
+            "building",
+            "osm_status",
+            "damage_class",
+            "damage",
+            "damage_confidence",
+            "damage_model",
+            "imagery_pre",
+            "imagery_post",
+        ]
+    )
+    damage_label_map: dict[int, str] = field(
+        default_factory=lambda: {
+            -1: "no-data",
+            0: "no-damage",
+            1: "minor-damage",
+            2: "major-damage",
+            3: "destroyed",
+        }
+    )
+    damage_provenance_imagery_pre: str = ""
+    damage_provenance_imagery_post: str = ""
+    damage_provenance_damage_model: str = ""
+
 
 def load_event_config(path: str | Path, overrides: list[str] | None = None) -> DictConfig:
-    """Load a YAML file into the EventConfig schema. Overrides are OmegaConf dotlist."""
+    """Load YAML into the EventConfig schema; overrides use OmegaConf dotlist syntax."""
     base = OmegaConf.structured(EventConfig)
     loaded = OmegaConf.load(Path(path))
     merged = OmegaConf.merge(base, loaded)
     if overrides:
         merged = OmegaConf.merge(merged, OmegaConf.from_dotlist(overrides))
+    if merged.osm_source not in _VALID_OSM_SOURCES:
+        raise ValueError(f"osm_source must be one of {_VALID_OSM_SOURCES}, got {merged.osm_source!r}")
     return cast(DictConfig, merged)

@@ -1,6 +1,4 @@
-"""End-to-end orchestrator for `dda run --config event.yaml`. Stages run in fixed order and
-call the same functions the standalone CLI subcommands use, so behaviour matches per-stage
-runs. Outputs follow `PipelinePaths` under `outputs/<area>/`."""
+"""End-to-end orchestrator for `dda run --config event.yaml`; delegates to the per-stage functions."""
 
 import json
 import logging
@@ -81,6 +79,7 @@ def _stage_prepare(cfg: DictConfig, paths: PipelinePaths) -> None:
         calibrate_photometry=cfg.photometric_calibration,
         stretch_percentiles=cfg.stretch_percentiles,
         keep_raw=cfg.keep_raw,
+        shift_direction=cfg.shift_direction,
     )
 
 
@@ -141,10 +140,32 @@ def _stage_buildings(cfg: DictConfig, paths: PipelinePaths) -> None:
         )
         return
     if cfg.buildings.source == "osm":
-        from dda.pipeline.postpass import fetch_postpass_buildings
+        source = cfg.osm_source
+        if source == "postpass":
+            from dda.pipeline.postpass import fetch_postpass_buildings
 
-        fetch_postpass_buildings(paths.aoi, paths.buildings)
-        return
+            fetch_postpass_buildings(paths.aoi, paths.buildings)
+            return
+        if source == "raw_data_api":
+            import geopandas as gpd
+
+            from dda.pipeline.geowrite import write_dual
+            from dda.pipeline.osm_pull import pull_osm_buildings
+
+            families = [dict(f) for f in cfg.osm_tag_families]
+            gdf = pull_osm_buildings(
+                aoi_geojson=paths.aoi,
+                cache_dir=paths.root / "osm_cache",
+                families=families,
+            )
+            write_dual(gpd.GeoDataFrame(gdf, geometry="geometry", crs=gdf.crs), paths.buildings)
+            log.info(
+                "buildings: pulled %d OSM footprints via raw-data-api -> %s(.geojson|.parquet)",
+                len(gdf),
+                paths.buildings.with_suffix(""),
+            )
+            return
+        raise ValueError(f"unknown osm_source: {source!r}")
     from dda.pipeline.buildings import run_fair_buildings
 
     run_fair_buildings(
@@ -161,6 +182,11 @@ def _stage_damage(cfg: DictConfig, paths: PipelinePaths) -> None:
     from dda.pipeline.damage import run_damage_blocked
 
     train_cfg = load_config(None)
+    train_cfg.damage_output_schema = list(cfg.damage_output_schema)
+    train_cfg.damage_label_map = {int(k): str(v) for k, v in cfg.damage_label_map.items()}
+    train_cfg.damage_provenance_imagery_pre = cfg.damage_provenance_imagery_pre
+    train_cfg.damage_provenance_imagery_post = cfg.damage_provenance_imagery_post
+    train_cfg.damage_provenance_damage_model = cfg.damage_provenance_damage_model
     run_damage_blocked(
         cfg=train_cfg,
         ckpt_path=resolve_ckpt(train_cfg, cfg.damage.ckpt),

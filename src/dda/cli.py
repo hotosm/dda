@@ -102,7 +102,13 @@ def _add_pipeline_parsers(sub) -> None:  # single dispatch table; splitting hurt
         "--source",
         default="fair",
         choices=["fair", "osm"],
-        help="fair = DINOv3-S UperNet inference on pre_aligned; osm = PostPass query for OSM buildings",
+        help="fair = DINOv3-S UperNet inference on pre_aligned; osm = pull building footprints from OSM",
+    )
+    p_bld.add_argument(
+        "--osm-source",
+        default="raw_data_api",
+        choices=["raw_data_api", "postpass"],
+        help="Backend for --source osm; raw_data_api supports lifecycle tag families (destroyed:building)",
     )
     p_bld.add_argument(
         "--input",
@@ -114,6 +120,12 @@ def _add_pipeline_parsers(sub) -> None:  # single dispatch table; splitting hurt
         default=None,
         help="Fine-tuned buildings ckpt path (e.g. from `dda fewshot buildings`); defaults to pretrained",
     )
+    p_bld.add_argument(
+        "--config",
+        "-c",
+        default=None,
+        help="Optional TrainConfig YAML; used to source osm_tag_families for --source osm",
+    )
 
     p_dam = sub.add_parser(
         "damage",
@@ -122,11 +134,8 @@ def _add_pipeline_parsers(sub) -> None:  # single dispatch table; splitting hurt
     p_dam.add_argument("--area", required=True)
     p_dam.add_argument("--ckpt", default=None)
     p_dam.add_argument("--outputs-root", default="outputs")
-    _common_dev = lambda p: (  # noqa: E731  # small local sugar
-        p.add_argument("--config", "-c", default="conf/train.yaml"),
-        p.add_argument("overrides", nargs="*"),
-    )
-    _common_dev(p_dam)
+    p_dam.add_argument("--config", "-c", default="conf/train.yaml")
+    p_dam.add_argument("overrides", nargs="*")
 
     p_eval = sub.add_parser("eval", help="Per-class F1 / confusion matrix vs labelled ground truth")
     p_eval.add_argument("--predictions", required=True, help="Path to a damage.geojson")
@@ -359,9 +368,24 @@ def _run_buildings(args, paths) -> int:
         )
         return 0
     if args.source == "osm":
-        from dda.pipeline.postpass import fetch_postpass_buildings
+        if args.osm_source == "postpass":
+            from dda.pipeline.postpass import fetch_postpass_buildings
 
-        fetch_postpass_buildings(paths.aoi, paths.buildings)
+            fetch_postpass_buildings(paths.aoi, paths.buildings)
+            return 0
+        import geopandas as gpd
+
+        from dda.pipeline.geowrite import write_dual
+        from dda.pipeline.osm_pull import pull_osm_buildings
+
+        cfg = load_config(args.config) if args.config else load_config(None)
+        families = [dict(f) for f in cfg.osm_tag_families]
+        gdf = pull_osm_buildings(
+            aoi_geojson=paths.aoi,
+            cache_dir=paths.root / "osm_cache",
+            families=families,
+        )
+        write_dual(gpd.GeoDataFrame(gdf, geometry="geometry", crs=gdf.crs), paths.buildings)
         return 0
     from dda.pipeline.buildings import run_fair_buildings
 

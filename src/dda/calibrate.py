@@ -1,8 +1,4 @@
-"""Temperature scaling for calibrated per-building confidence.
-
-A single scalar temperature, fit on the val split by minimising NLL, rescales logits without
-changing the predicted class. The fitted value feeds inference as `softmax(logits / T)`.
-"""
+"""Temperature scaling for calibrated per-building confidence; single scalar fit on val by NLL."""
 
 import logging
 

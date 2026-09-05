@@ -52,10 +52,12 @@ Short version, one YAML declares the event and one command runs it:
 dda run --config conf/colombia_eq.yaml
 ```
 
-Stage order: `aoi, prepare, fewshot, buildings, label, damage, publish`. Resume from
+Stage order: `aoi, prepare, fewshot, buildings, damage, publish`. Resume from
 a stage with `-s <stage>` or run one stage in isolation with `--only <stage>`. Override
 any field from the CLI with OmegaConf dotlist syntax (`buildings.fewshot.hpo_trials=4`).
 Outputs land under `outputs/<area>/`; the final deliverable is `outputs/<area>/damage.geojson`.
+Labeling is out of scope for the pipeline; add a `damage` column to `buildings.geojson`
+externally, then rerun `damage` (see `docs/new_area_assessment.md` section 6).
 
 The per-stage commands (`dda prepare`, `dda buildings`, `dda damage`, `dda publish`) are
 available for one-off experiments and mid-pipeline resumes.
@@ -102,7 +104,7 @@ docker run --rm --gpus all \
   dda-gpu:local run --config /data/conf/colombia_eq.yaml --outputs-root /data/outputs
 ```
 
-The base is `python:3.13-slim-bookworm`; torch bundles its own CUDA runtime. The
+The base is the Astral `uv` slim Python 3.13 image; torch bundles its own CUDA runtime. The
 `facebookresearch/dinov3` torch.hub source is baked in, so the backbone loads offline at
 runtime. Volumes carry the outputs directory and the HF, torch caches so downloaded
 checkpoints persist between runs.

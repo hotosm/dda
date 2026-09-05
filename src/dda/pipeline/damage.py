@@ -1,5 +1,6 @@
-"""Block-tiled damage assessment. Buildings with under 90% pre OR post coverage are marked
-`no-data` (class -1) so tile-mosaic gaps don't score as confident 'destroyed'."""
+"""Block-tiled damage assessment. Buildings with under 90% pre or post coverage are marked
+class -1 with a reason-specific label (`no-data (no pre)`, `no-data (no post)`) so tile-mosaic
+gaps do not score as confident 'destroyed' and downstream can distinguish the two causes."""
 
 import logging
 from dataclasses import dataclass
@@ -22,8 +23,8 @@ log = logging.getLogger(__name__)
 
 NO_DATA_CLASS = -1
 NO_DATA_LABEL = "no-data"
-NO_PRE_DATA_LABEL = NO_DATA_LABEL
-NO_POST_DATA_LABEL = NO_DATA_LABEL
+NO_PRE_LABEL = "no-data (no pre)"
+NO_POST_LABEL = "no-data (no post)"
 
 
 @dataclass
@@ -97,11 +98,28 @@ def run_damage_blocked(
     out = pd.concat(accum, ignore_index=True) if accum else buildings_in_post.iloc[0:0].copy()
     out = gpd.GeoDataFrame(out, geometry="geometry", crs=post_crs).to_crs(buildings.crs)
     out = out.drop(columns=[c for c in ["centroid_px"] if c in out.columns])
+    out = _apply_output_schema(out, cfg)  # ty: ignore[invalid-argument-type]
     from dda.pipeline.geowrite import write_dual
 
-    write_dual(out, out_geojson)  # ty: ignore[invalid-argument-type]
+    write_dual(out, out_geojson)
     log.info("wrote %d buildings with damage -> %s(.geojson|.parquet)", len(out), out_geojson.with_suffix(""))
     return out_geojson
+
+
+def _apply_output_schema(gdf: gpd.GeoDataFrame, cfg: DictConfig) -> gpd.GeoDataFrame:
+    """Remap positive `damage_class` via cfg.damage_label_map; keep reason-specific no-data labels."""
+    gdf = gdf.copy()
+    label_map = {int(k): str(v) for k, v in cfg.damage_label_map.items()}
+    positive = gdf["damage_class"] >= 0
+    if positive.any():
+        gdf.loc[positive, "damage"] = gdf.loc[positive, "damage_class"].map(label_map)
+    gdf["damage_model"] = cfg.damage_provenance_damage_model
+    gdf["imagery_pre"] = cfg.damage_provenance_imagery_pre
+    gdf["imagery_post"] = cfg.damage_provenance_imagery_post
+    schema = [c for c in cfg.damage_output_schema if c in gdf.columns]
+    if "geometry" not in schema:
+        schema.append("geometry")
+    return gdf[schema]
 
 
 def _process_block(
@@ -139,7 +157,6 @@ def _process_block(
     with rasterio.open(post_raster) as post_src:
         post_arr = post_src.read([1, 2, 3], window=window).transpose(1, 2, 0).astype(np.uint8)
         block_transform = post_src.window_transform(window)
-        block_crs = post_src.crs
     with rasterio.open(pre_aligned) as pre_src:
         pre_arr = pre_src.read([1, 2, 3], window=window).transpose(1, 2, 0).astype(np.uint8)
 
@@ -158,8 +175,8 @@ def _process_block(
     valid_mask = pre_ok & post_ok
 
     covered_buildings = block_buildings.loc[valid_mask].copy()
-    no_pre_buildings = _label_no_data(block_buildings.loc[~pre_ok].copy(), NO_PRE_DATA_LABEL)
-    no_post_buildings = _label_no_data(block_buildings.loc[pre_ok & ~post_ok].copy(), NO_POST_DATA_LABEL)
+    no_pre_buildings = _label_no_data(block_buildings.loc[~pre_ok].copy(), NO_PRE_LABEL)
+    no_post_buildings = _label_no_data(block_buildings.loc[pre_ok & ~post_ok].copy(), NO_POST_LABEL)
 
     scored = _empty_result(block_buildings.crs)
     if len(covered_buildings) > 0:
@@ -175,7 +192,6 @@ def _process_block(
         scored = _assign_from_prob(
             prob=prob,
             transform=block_transform,
-            crs=block_crs,
             buildings=covered_buildings,
             pool_op=cfg.pool_op,
             percentile=cfg.pool_percentile,
@@ -187,23 +203,22 @@ def _process_block(
 
 def _coverage_fraction(buildings: gpd.GeoDataFrame, valid: np.ndarray, transform) -> np.ndarray:
     """Rasterize buildings on the block grid, return per-building fraction of valid pixels."""
-    height, width = valid.shape
-    ids = np.arange(1, len(buildings) + 1, dtype=np.int32)
+    n = len(buildings)
+    ids = np.arange(1, n + 1, dtype=np.int32)
     id_raster = rasterize(
         [(geom, i) for geom, i in zip(buildings.geometry, ids, strict=True)],
-        out_shape=(height, width),
+        out_shape=valid.shape,
         transform=transform,
         fill=0,
         dtype="int32",
     )
-    coverage = np.zeros(len(buildings), dtype=np.float32)
-    for i, bid in enumerate(ids, start=0):
-        mask = id_raster == bid
-        pixels = int(mask.sum())
-        if pixels == 0:
-            coverage[i] = 0.0
-            continue
-        coverage[i] = float((valid[mask]).sum()) / pixels
+    flat_ids = id_raster.ravel()
+    flat_valid = valid.ravel().astype(np.float64)
+    totals = np.bincount(flat_ids, minlength=n + 1)[1:]
+    valids = np.bincount(flat_ids, weights=flat_valid, minlength=n + 1)[1:]
+    coverage = np.zeros(n, dtype=np.float32)
+    nonzero = totals > 0
+    coverage[nonzero] = (valids[nonzero] / totals[nonzero]).astype(np.float32)
     return coverage
 
 
@@ -225,7 +240,6 @@ def _assign_from_prob(
     *,
     prob: np.ndarray,
     transform,
-    crs,
     buildings: gpd.GeoDataFrame,
     pool_op: str,
     percentile: float,
@@ -257,7 +271,7 @@ def _assign_from_prob(
             confs.append(float("nan"))
             continue
         pix = prob[:, r0:r1, c0:c1][:, inside]
-        cls, _ = _pool_pixels(pix, pool_op, percentile, ordinal)
+        cls = _pool_pixels(pix, pool_op, percentile, ordinal)
         classes.append(cls)
         labels.append(DAMAGE_CLASSES[cls])
         confs.append(float(pix[cls].mean()))
@@ -265,18 +279,14 @@ def _assign_from_prob(
     out["damage_class"] = classes
     out["damage"] = labels
     out["damage_confidence"] = confs
-    _ = crs
     return out
 
 
-def _pool_pixels(
-    pix: np.ndarray, pool_op: str, percentile: float, ordinal: np.ndarray
-) -> tuple[int, np.ndarray]:
-    agg = pix.mean(axis=1)
+def _pool_pixels(pix: np.ndarray, pool_op: str, percentile: float, ordinal: np.ndarray) -> int:
     if pool_op == "mean":
-        return int(agg.argmax()), agg
+        return int(pix.mean(axis=1).argmax())
     if pool_op == "max":
-        return int(pix.argmax(axis=0).max()), agg
+        return int(pix.argmax(axis=0).max())
     severity = (ordinal[:, None] * pix).sum(axis=0)
     sev = float(np.percentile(severity, percentile))
-    return int(np.clip(round(sev), 0, N_DAMAGE_CLASSES - 1)), agg
+    return int(np.clip(round(sev), 0, N_DAMAGE_CLASSES - 1))

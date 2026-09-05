@@ -14,7 +14,8 @@ from huggingface_hub import hf_hub_download
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
 from rasterio.features import rasterize
-from rasterio.warp import Resampling, reproject
+from rasterio.vrt import WarpedVRT
+from rasterio.warp import Resampling
 from rasterio.windows import Window
 from torch.utils.data import DataLoader, Dataset
 
@@ -142,31 +143,29 @@ def _chip_area(
             {c: int((damage_raster == c).sum()) for c in [1, 2, 3, 4]},
         )
 
-        with rasterio.open(pre_raster) as pre:
-            pre_full = np.zeros((3, height, width), dtype=np.uint8)
-            for b in range(3):
-                reproject(
-                    source=rasterio.band(pre, b + 1),
-                    destination=pre_full[b],
-                    src_transform=pre.transform,
-                    src_crs=pre.crs,
-                    dst_transform=post_transform,
-                    dst_crs=post_crs,
-                    resampling=Resampling.cubic,
-                )
-
         chips: list[dict[str, Any]] = []
-        for y in range(0, height - tile_size + 1, stride):
-            for x in range(0, width - tile_size + 1, stride):
-                dmg = damage_raster[y : y + tile_size, x : x + tile_size]
-                if int((dmg > 0).sum()) == 0:
-                    continue
-                pre_tile = pre_full[:, y : y + tile_size, x : x + tile_size]
-                if int((pre_tile > 0).any(axis=0).mean() * 100) < MIN_PRE_COVERAGE_PCT:
-                    continue
-                win = Window(x, y, tile_size, tile_size)  # ty: ignore[too-many-positional-arguments]
-                post_tile = post.read([1, 2, 3], window=win).astype(np.uint8)
-                chips.append({"post": post_tile, "pre": pre_tile, "damage": dmg.copy()})
+        with (
+            rasterio.open(pre_raster) as pre_src,
+            WarpedVRT(
+                pre_src,
+                crs=post_crs,
+                transform=post_transform,
+                width=width,
+                height=height,
+                resampling=Resampling.cubic,
+            ) as pre_vrt,
+        ):
+            for y in range(0, height - tile_size + 1, stride):
+                for x in range(0, width - tile_size + 1, stride):
+                    dmg = damage_raster[y : y + tile_size, x : x + tile_size]
+                    if int((dmg > 0).sum()) == 0:
+                        continue
+                    win = Window(x, y, tile_size, tile_size)  # ty: ignore[too-many-positional-arguments]
+                    pre_tile = pre_vrt.read([1, 2, 3], window=win).astype(np.uint8)
+                    if (pre_tile > 0).any(axis=0).mean() * 100 < MIN_PRE_COVERAGE_PCT:
+                        continue
+                    post_tile = post.read([1, 2, 3], window=win).astype(np.uint8)
+                    chips.append({"post": post_tile, "pre": pre_tile, "damage": dmg.copy()})
     log.info("fewshot damage: kept %d chips (tile=%d, stride=%d)", len(chips), tile_size, stride)
     return chips
 

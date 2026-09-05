@@ -1,8 +1,4 @@
-"""Object-level (per-building) damage evaluation.
-
-Buildings are connected components of the ground-truth mask; each component's class is pooled the
-same way inference pools under a footprint. Reports per-class, macro, and xView2 harmonic damage F1.
-"""
+"""Per-building damage F1 by pooling model probs inside each ground-truth mask component."""
 
 import logging
 

@@ -1,10 +1,4 @@
-"""torch.hub preflight bypass.
-
-torch.hub.load() calls `_parse_repo_info()`, which hits GitHub before checking the local
-cache directory. This breaks any environment that is rate-limited or offline, even when the
-cache holds a full clone of the repo. Called at import time of anything that instantiates a
-DINOv3 backbone (which goes through torch.hub inside terratorch).
-"""
+"""torch.hub preflight bypass; falls back to the local hub cache when GitHub is unreachable."""
 
 import http.client
 import logging

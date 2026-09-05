@@ -1,10 +1,10 @@
-"""Building footprints on `pre_aligned` via fAIr's `dinov3-hot-buildings` (torch path only, ONNX
-is broken on CUDA). Macroblock-tiled with a halo margin for seam-free overlap-add; centroid
-half-open dedup at seams; blocks outside the AOI are skipped up-front."""
+"""Building footprints on `pre_aligned` via fAIr's dinov3-hot-buildings torch path; ONNX is broken on CUDA."""
 
 import gc
 import json
 import logging
+import os
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -91,61 +91,62 @@ def run_fair_buildings(  # noqa: PLR0915  # single-purpose macroblock loop, spli
     aoi_geom = _load_aoi_geom(aoi)
     aoi_prep = prep(aoi_geom)
 
-    block_tmp = out_geojson.parent / "_block_scratch.tif"
+    fd, tmp_name = tempfile.mkstemp(prefix="_block_scratch_", suffix=".tif", dir=out_geojson.parent)
+    os.close(fd)
+    block_tmp = Path(tmp_name)
     t0 = time.time()
     all_feats: list[dict] = []
     skipped = 0
-    for i, (cx, cy) in enumerate(blocks, start=1):
-        cxe = min(cx + cfg.core_px, width)
-        cye = min(cy + cfg.core_px, height)
-        # Core bounds in 4326 (matches the CRS the vectorized polygons are reprojected to below).
-        # Needed both for the AOI-intersection skip and for the half-open centroid dedup at seams.
-        cw_r, cn_r = transform * (cx, cy)
-        ce_r, cs_r = transform * (cxe, cye)
-        cw, cs, ce, cn = transform_bounds(
-            raster_crs,
-            "EPSG:4326",
-            min(cw_r, ce_r),
-            min(cs_r, cn_r),
-            max(cw_r, ce_r),
-            max(cs_r, cn_r),
-        )
-        if not aoi_prep.intersects(box(cw, cs, ce, cn)):
-            skipped += 1
-            if i % 5 == 0 or i == len(blocks):
-                log.info(
-                    "buildings: [%d/%d] outside AOI, skipped (%d skipped, %d kept)",
-                    i,
-                    len(blocks),
-                    skipped,
-                    len(all_feats),
-                )
-            continue
+    try:
+        for i, (cx, cy) in enumerate(blocks, start=1):
+            cxe = min(cx + cfg.core_px, width)
+            cye = min(cy + cfg.core_px, height)
+            # Core bounds in 4326: shared frame for the AOI skip and the seam-edge centroid dedup.
+            cw_r, cn_r = transform * (cx, cy)
+            ce_r, cs_r = transform * (cxe, cye)
+            cw, cs, ce, cn = transform_bounds(
+                raster_crs,
+                "EPSG:4326",
+                min(cw_r, ce_r),
+                min(cs_r, cn_r),
+                max(cw_r, ce_r),
+                max(cs_r, cn_r),
+            )
+            if not aoi_prep.intersects(box(cw, cs, ce, cn)):
+                skipped += 1
+                if i % 5 == 0 or i == len(blocks):
+                    log.info(
+                        "buildings: [%d/%d] outside AOI, skipped (%d skipped, %d kept)",
+                        i,
+                        len(blocks),
+                        skipped,
+                        len(all_feats),
+                    )
+                continue
 
-        fx = max(0, cx - cfg.halo_px)
-        fy = max(0, cy - cfg.halo_px)
-        fxe = min(width, cxe + cfg.halo_px)
-        fye = min(height, cye + cfg.halo_px)
-        with rasterio.open(pre_aligned) as s:
-            win = Window(fx, fy, fxe - fx, fye - fy)  # ty: ignore[too-many-positional-arguments]
-            arr = s.read([1, 2, 3], window=win)
-            prof = {
-                "driver": "GTiff",
-                "height": arr.shape[1],
-                "width": arr.shape[2],
-                "count": 3,
-                "dtype": "uint8",
-                "crs": s.crs,
-                "transform": s.window_transform(win),
-                "tiled": True,
-                "blockxsize": 512,
-                "blockysize": 512,
-            }
-            with rasterio.open(block_tmp, "w", **prof) as d:
-                d.write(arr)
-        del arr
+            fx = max(0, cx - cfg.halo_px)
+            fy = max(0, cy - cfg.halo_px)
+            fxe = min(width, cxe + cfg.halo_px)
+            fye = min(height, cye + cfg.halo_px)
+            with rasterio.open(pre_aligned) as s:
+                win = Window(fx, fy, fxe - fx, fye - fy)  # ty: ignore[too-many-positional-arguments]
+                arr = s.read([1, 2, 3], window=win)
+                prof = {
+                    "driver": "GTiff",
+                    "height": arr.shape[1],
+                    "width": arr.shape[2],
+                    "count": 3,
+                    "dtype": "uint8",
+                    "crs": s.crs,
+                    "transform": s.window_transform(win),
+                    "tiled": True,
+                    "blockxsize": 512,
+                    "blockysize": 512,
+                }
+                with rasterio.open(block_tmp, "w", **prof) as d:
+                    d.write(arr)
+            del arr
 
-        try:
             mp, _, dist, tr, crs = sliding_window_predict(
                 model,
                 str(block_tmp),
@@ -179,28 +180,27 @@ def run_fair_buildings(  # noqa: PLR0915  # single-purpose macroblock loop, spli
             else:
                 feats = []
             del mp, dist, lab, gdf
-        except Exception as exc:
-            log.warning("buildings: block %d FAIL: %s", i, exc)
-            feats = []
-        gc.collect()
+            gc.collect()
 
-        kept = 0
-        for f in feats:
-            ring = f["geometry"]["coordinates"][0]
-            x = sum(p[0] for p in ring) / len(ring)
-            y = sum(p[1] for p in ring) / len(ring)
-            if cw <= x < ce and cs < y <= cn:
-                all_feats.append(f)
-                kept += 1
-        if i % 5 == 0 or i == len(blocks):
-            log.info(
-                "buildings: [%d/%d] +%d | total %d (%ds)",
-                i,
-                len(blocks),
-                kept,
-                len(all_feats),
-                int(time.time() - t0),
-            )
+            kept = 0
+            for f in feats:
+                ring = f["geometry"]["coordinates"][0]
+                x = sum(p[0] for p in ring) / len(ring)
+                y = sum(p[1] for p in ring) / len(ring)
+                if cw <= x < ce and cs < y <= cn:
+                    all_feats.append(f)
+                    kept += 1
+            if i % 5 == 0 or i == len(blocks):
+                log.info(
+                    "buildings: [%d/%d] +%d | total %d (%ds)",
+                    i,
+                    len(blocks),
+                    kept,
+                    len(all_feats),
+                    int(time.time() - t0),
+                )
+    finally:
+        block_tmp.unlink(missing_ok=True)
 
     clip = prep(aoi_geom)
     final = [
@@ -232,8 +232,6 @@ def run_fair_buildings(  # noqa: PLR0915  # single-purpose macroblock loop, spli
         out_geojson.with_suffix(""),
         int(time.time() - t0),
     )
-    if block_tmp.exists():
-        block_tmp.unlink()
     return out_geojson
 
 

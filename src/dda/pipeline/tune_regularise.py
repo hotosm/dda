@@ -1,8 +1,4 @@
-"""Optuna TPE search over RegulariseParams against a ground-truth polygon layer.
-
-Composite objective mixes F1, matched IoU, poly/vertex count ratios, and shape
-metrics so no single term can be gamed.
-"""
+"""Optuna TPE search over RegulariseParams against ground truth; composite objective, no single term wins."""
 
 import logging
 import math
@@ -122,7 +118,8 @@ def _composite_score(
 
 def _extract_polygons(gdf: gpd.GeoDataFrame) -> list[Polygon]:
     return [
-        g for g in gdf.geometry
+        g
+        for g in gdf.geometry
         if g is not None and not g.is_empty and g.geom_type == "Polygon" and g.is_valid
     ]
 
@@ -189,7 +186,7 @@ def _isoperimetric_quotient(poly: Polygon) -> float:
     area = poly.area
     if area <= 0:
         return 0.0
-    return (poly.length ** 2) / (4.0 * math.pi * area)
+    return (poly.length**2) / (4.0 * math.pi * area)
 
 
 def _compactness_delta_norm(pred: list[Polygon], gt_compactness_mean: float) -> float:

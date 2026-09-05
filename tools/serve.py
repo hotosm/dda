@@ -1,7 +1,5 @@
 """Static files + `/oam-api/*` OAM proxy + `/tiles/{z}/{x}/{y}?url=` rio-tiler XYZ for tools/index.html."""
 
-from __future__ import annotations
-
 import argparse
 import http.server
 import socketserver

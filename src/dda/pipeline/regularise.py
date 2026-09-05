@@ -1,14 +1,4 @@
-"""Shape-preserving building footprint regulariser.
-
-Every input polygon keeps its outline; only sub-metre stair-steps and tilted
-edges get cleaned. A fidelity guard reverts any transform whose IoU vs raw
-falls below params.fidelity_min_iou. Steps iterate until the tilted-edge
-percentage converges. Every drop is attributed; a raw missing without cause
-fails loud.
-
-Stages: pool prefilter, multiblob split, reflex-anchored DP simplify, 8-way
-orthogonalise, vertex adoption, sliver absorb, pool re-filter, overlap elimination.
-"""
+"""Shape-preserving footprint regulariser; a fidelity IoU guard reverts any step that hurts a polygon."""
 
 import logging
 import math
@@ -103,14 +93,24 @@ def regularise_footprints(
     for pass_index in range(p.max_iterations):
         tagged = _apply_with_guard(
             lambda t: _simplify_all(t, p.simplify_m, p.simplify_perimeter_pct, p.reflex_min_notch_m),
-            tagged, canonical, "simplify", p.fidelity_min_iou,
+            tagged,
+            canonical,
+            "simplify",
+            p.fidelity_min_iou,
         )
         tagged = _apply_with_guard(
             lambda t: _orthogonalise_all(t, p.ortho_min_area_ratio, p.ortho_45_tol_deg),
-            tagged, canonical, "ortho", p.fidelity_min_iou,
+            tagged,
+            canonical,
+            "ortho",
+            p.fidelity_min_iou,
         )
         tagged = _apply_with_guard(
-            _adopt_vertices, tagged, canonical, "adopt", p.fidelity_min_iou,
+            _adopt_vertices,
+            tagged,
+            canonical,
+            "adopt",
+            p.fidelity_min_iou,
         )
 
         tagged, absorbed_now, sliver_dropped = _absorb_slivers(tagged, canonical, p)
@@ -129,9 +129,7 @@ def regularise_footprints(
 
         tilted_pct = _tilted_percentage([poly for _, poly in tagged])
         tilted_history.append(tilted_pct)
-        log.info(
-            "regularise: pass %d tilted=%.2f%% kept=%d", pass_index + 1, tilted_pct, len(tagged)
-        )
+        log.info("regularise: pass %d tilted=%.2f%% kept=%d", pass_index + 1, tilted_pct, len(tagged))
         if len(tilted_history) >= 2:
             delta = abs(tilted_history[-1] - tilted_history[-2])
             if delta < p.converge_tilted_pct_tol:
@@ -172,9 +170,7 @@ def regularise_footprints(
     return gpd.GeoDataFrame(geometry=output_polys, crs=gdf.crs)
 
 
-def _classify_input(
-    gdf: gpd.GeoDataFrame, min_area_m2: float
-) -> tuple[dict[int, str], list[Polygon]]:
+def _classify_input(gdf: gpd.GeoDataFrame, min_area_m2: float) -> tuple[dict[int, str], list[Polygon]]:
     """Split input into per-index drop reasons and a list of valid polygons."""
     input_drops: dict[int, str] = {}
     valid: list[Polygon] = []
@@ -189,9 +185,7 @@ def _classify_input(
     return input_drops, valid
 
 
-def _split_multiblob(
-    polys: list[Polygon], open_m: float, min_area_m2: float
-) -> list[Polygon]:
+def _split_multiblob(polys: list[Polygon], open_m: float, min_area_m2: float) -> list[Polygon]:
     """Symmetric morphological open; revert when pieces cover < SPLIT_AREA_COVERAGE_MIN of the source."""
     open_deg = open_m * DEG_PER_M
     out: list[Polygon] = []
@@ -235,9 +229,7 @@ def _simplify_all(
     return out
 
 
-def _simplify_preserving_reflex(
-    poly: Polygon, tol_deg: float, reflex_min_notch_m: float
-) -> Polygon:
+def _simplify_preserving_reflex(poly: Polygon, tol_deg: float, reflex_min_notch_m: float) -> Polygon:
     """DP-simplify each convex arc between reflex anchors so real inward setbacks survive."""
     ring = list(poly.exterior.coords[:-1])
     if len(ring) < 4:
@@ -265,16 +257,14 @@ def _plain_simplify(poly: Polygon, tol_deg: float) -> Polygon:
     return simplified
 
 
-def _simplify_between_anchors(
-    ring: list, anchors: list[int], tol_deg: float
-) -> list[tuple[float, float]]:
+def _simplify_between_anchors(ring: list, anchors: list[int], tol_deg: float) -> list[tuple[float, float]]:
     """DP-simplify each arc bounded by two anchor indices, preserving the anchors."""
     new_coords: list[tuple[float, float]] = []
     n_anchors = len(anchors)
     for si in range(n_anchors):
         i0 = anchors[si]
         i1 = anchors[(si + 1) % n_anchors]
-        segment = ring[i0:i1 + 1] if i1 > i0 else ring[i0:] + ring[:i1 + 1]
+        segment = ring[i0 : i1 + 1] if i1 > i0 else ring[i0:] + ring[: i1 + 1]
         if len(segment) <= 2:
             new_coords.append(tuple(segment[0]))
             continue
@@ -295,9 +285,7 @@ def _orthogonalise_all(
     return out
 
 
-def _orthogonalise_polygon(
-    poly: Polygon, ortho_min_area_ratio: float, ortho_45_tol_deg: float
-) -> Polygon:
+def _orthogonalise_polygon(poly: Polygon, ortho_min_area_ratio: float, ortho_45_tol_deg: float) -> Polygon:
     """8-way snap in the dominant-axis frame; salvage via longest-edge rigid rotation on area clip."""
     if poly.is_empty or poly.geom_type != "Polygon" or poly.area <= 0:
         return poly
@@ -323,7 +311,8 @@ def _snap_polygon_to_8way(
     snapped_ext = _snap_ring_to_8way(ext, ortho_45_tol_deg)
     snapped_holes = [
         _snap_ring_to_8way(list(ring.coords[:-1]), ortho_45_tol_deg)
-        if len(ring.coords) - 1 >= 4 else list(ring.coords[:-1])
+        if len(ring.coords) - 1 >= 4
+        else list(ring.coords[:-1])
         for ring in rotated.interiors
     ]
     candidate = _build_polygon(snapped_ext, snapped_holes)
@@ -596,7 +585,7 @@ def _find_overlap_pairs(polys: list[Polygon | None]) -> list[tuple[int, int]]:
     active_polys = [p for _, p in active]
     active_idx = [k for k, _ in active]
     tree = STRtree(active_polys)
-    area_thresh_deg2 = OVERLAP_MIN_M2 * (DEG_PER_M ** 2)
+    area_thresh_deg2 = OVERLAP_MIN_M2 * (DEG_PER_M**2)
     seen: set[tuple[int, int]] = set()
     pairs: list[tuple[int, int]] = []
     for m, p in enumerate(active_polys):
@@ -629,9 +618,7 @@ def _apply_with_guard(
     fidelity_min_iou: float,
 ) -> list[tuple[int, Polygon]]:
     """Revert any polygon whose IoU drops below fidelity_min_iou when the pre-step scored strictly better."""
-    before_by_id: dict[int, Polygon] = {
-        rid: p for rid, p in tagged if _is_active_polygon(p)
-    }
+    before_by_id: dict[int, Polygon] = {rid: p for rid, p in tagged if _is_active_polygon(p)}
     after = step_fn(tagged)
     out: list[tuple[int, Polygon]] = []
     reverted = 0
@@ -811,9 +798,7 @@ def _count_reflex_vertices(poly: Polygon, min_notch_m: float) -> int:
     return len(_reflex_indices(ring, poly.exterior.is_ccw, min_notch_m * DEG_PER_M))
 
 
-def _snap_ring_to_8way(
-    ring: list, ortho_45_tol_deg: float, max_iter: int = SNAP_MAX_ITER
-) -> list:
+def _snap_ring_to_8way(ring: list, ortho_45_tol_deg: float, max_iter: int = SNAP_MAX_ITER) -> list:
     """Iteratively snap every edge to 0/45/90/135 deg; terminates on convergence or max_iter."""
     n = len(ring)
     if n < 3:
@@ -1101,17 +1086,13 @@ def _mrr_aspect(poly: Polygon) -> float:
     return max(sides) / lo
 
 
-def _pool_keep_mask(
-    polys: list[Polygon], raster_path: str, pool_min_fraction: float
-) -> list[bool]:
+def _pool_keep_mask(polys: list[Polygon], raster_path: str, pool_min_fraction: float) -> list[bool]:
     """True per polygon whose interior is not pool-coloured (blue-dominant RGB or cyan HSV)."""
     keep: list[bool] = []
     with rasterio.open(raster_path) as src:
         for poly in polys:
             try:
-                arr, _ = rasterio_mask(
-                    src, [mapping(poly)], crop=True, filled=False, all_touched=False
-                )
+                arr, _ = rasterio_mask(src, [mapping(poly)], crop=True, filled=False, all_touched=False)
             except ValueError:
                 # Polygon lies outside the raster; keep (no pool evidence available).
                 keep.append(True)
@@ -1125,10 +1106,7 @@ def _pool_keep_mask(
             blue_dom = (b > r + POOL_BLUE_OVER_RED) & (b > g + POOL_BLUE_OVER_GREEN)
             h, s, v = _rgb_to_hsv_arrays(r, g, b)
             cyan_dom = (
-                (h >= POOL_CYAN_H_LO)
-                & (h <= POOL_CYAN_H_HI)
-                & (s > POOL_CYAN_S_MIN)
-                & (v > POOL_CYAN_V_MIN)
+                (h >= POOL_CYAN_H_LO) & (h <= POOL_CYAN_H_HI) & (s > POOL_CYAN_S_MIN) & (v > POOL_CYAN_V_MIN)
             )
             pool_dom = blue_dom | cyan_dom
             keep.append(bool(pool_dom.mean() < pool_min_fraction))

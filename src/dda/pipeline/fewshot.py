@@ -1,6 +1,4 @@
-"""Few-shot adaptation of the fAIr buildings model. Backbone is frozen; decoder + heads train.
-Defaults target the small-data regime; warnings fire on tiny chip counts or IoU regression.
-Damage few-shot lives in `dda.pipeline.fewshot_damage`, re-exported below."""
+"""Few-shot fit of the fAIr buildings model with the backbone frozen; damage variant re-exported here."""
 
 import json
 import logging
@@ -77,6 +75,12 @@ def _stretch_chip_dir(chips_dir: Path, low: float = 2.0, high: float = 98.0, pre
     for b in range(3):
         lo, hi = np.percentile(all_pixels[b].astype(np.float32), [low, high])
         if hi - lo < 1.0:
+            log.warning(
+                "stretch: band %d degenerate percentile range (lo=%.2f hi=%.2f); widening to lo+1",
+                b,
+                float(lo),
+                float(hi),
+            )
             hi = lo + 1.0
         lows.append(float(lo))
         highs.append(float(hi))

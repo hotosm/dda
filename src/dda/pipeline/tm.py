@@ -1,9 +1,4 @@
-"""HOT Tasking Manager v2 client.
-
-`.areaOfInterest` is the AOI FeatureCollection; `.imagery` is a TMS URL string and is often
-null (many projects reference imagery only in `projectInfo.instructions`), so callers must
-handle None or pass an override.
-"""
+"""HOT Tasking Manager v2 client; `.imagery` is often null, so callers must handle None or override."""
 
 import json
 import logging

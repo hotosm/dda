@@ -27,12 +27,7 @@ def _harmonic_mean(values: torch.Tensor) -> torch.Tensor:
 
 
 class DinoV3DamageNet(nn.Module):
-    """Frozen siamese DINOv3 + UperNet with a localization head and an ordinal damage head.
-
-    Pre and post share the backbone; per tap the two feature maps are concatenated and projected
-    back to `embed_dim`. Modality dropout randomly replaces pre with post so one checkpoint serves
-    both pre+post and post-only. `unfreeze_last_n` opens the last N transformer blocks for gradients.
-    """
+    """Frozen siamese DINOv3 + UperNet; modality dropout swaps pre for post so one ckpt serves both."""
 
     def __init__(
         self,
@@ -219,8 +214,7 @@ class DinoV3DamageLit(LightningModule):
         dmg_f1 = _harmonic_mean(per_class)
         macro_f1 = per_class.mean()
         loc_iou = self.val_loc_iou.compute()  # ty: ignore[missing-argument]
-        # Macro F1 is the checkpoint metric: a single-event val can lack a class and zero-collapse
-        # the harmonic mean, which would make model selection unstable.
+        # Macro is the checkpoint metric; harmonic collapses on any zero-count class in a single-event val.
         self.log("val/dmg_macro_f1", macro_f1, prog_bar=True)
         self.log("val/dmg_f1", dmg_f1, prog_bar=True)
         self.log("val/loc_iou", loc_iou, prog_bar=True)

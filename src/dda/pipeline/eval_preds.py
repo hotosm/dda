@@ -1,10 +1,4 @@
-"""Accuracy metric for one area: match predictions to user-labeled ground truth by nearest
-building centroid, report per-class precision/recall/F1 + confusion matrix + overall accuracy.
-
-Labels file schema (GeoJSON, WGS84): each feature has a `damage` property with one of
-`no-damage`, `minor-damage`, `major-damage`, `destroyed`. Geometry may be polygon or point;
-we use the centroid either way.
-"""
+"""Per-class precision/recall/F1 + confusion matrix against a labelled GeoJSON matched by centroid."""
 
 import json
 import logging
@@ -30,7 +24,7 @@ def evaluate(predictions: Path, labels: Path, out_json: Path | None = None) -> d
     if "damage" not in gt.columns:
         raise ValueError(f"{labels} has no `damage` column")
 
-    # Reproject both to metric so we can use a metre-based match radius.
+    # Metric CRS so the match radius is metres.
     preds_m = preds.to_crs("EPSG:3857")
     gt_m = gt.to_crs("EPSG:3857")
     pc = np.array([(g.centroid.x, g.centroid.y) for g in preds_m.geometry])
@@ -53,14 +47,12 @@ def evaluate(predictions: Path, labels: Path, out_json: Path | None = None) -> d
     y_true = gt["damage"].values[matched]
     y_pred = preds["damage"].values[idx[matched]]
 
-    # Confusion matrix (rows = true, cols = pred, both indexed by CLASSES)
     cm = np.zeros((len(CLASSES), len(CLASSES)), dtype=int)
     cls_ix = {c: i for i, c in enumerate(CLASSES)}
     for t, p in zip(y_true, y_pred, strict=True):
         if t in cls_ix and p in cls_ix:
             cm[cls_ix[t], cls_ix[p]] += 1
 
-    # Per-class precision / recall / F1
     per_class = {}
     for i, c in enumerate(CLASSES):
         tp = int(cm[i, i])

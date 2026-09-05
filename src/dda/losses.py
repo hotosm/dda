@@ -1,9 +1,4 @@
-"""Localization (binary) and ordinal damage losses.
-
-Damage classes are ordered (no-damage < minor < major < destroyed). A softmax head keeps
-per-building confidence calibrated; a squared Earth-Mover term penalises predictions by their
-ordinal distance from the truth so adjacent confusion costs less than far confusion.
-"""
+"""Localization (binary) and ordinal damage losses; adjacent-class confusion costs less than far confusion."""
 
 import torch
 from segmentation_models_pytorch.losses import DiceLoss
@@ -26,8 +21,7 @@ class LocalizationLoss(nn.Module):
 
 
 def _emd_ordinal(probs: torch.Tensor, target: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
-    """Squared Earth-Mover distance between the predicted class CDF and the one-hot target CDF,
-    summed over classes. `probs` is (N, C), `target` is (N,) class index, `valid` is (N,) bool."""
+    """Squared Earth-Mover distance between predicted and one-hot CDFs so far-off classes cost more."""
     if valid.sum() == 0:
         return probs.sum() * 0.0
     n_classes = probs.shape[1]
@@ -39,12 +33,7 @@ def _emd_ordinal(probs: torch.Tensor, target: torch.Tensor, valid: torch.Tensor)
 
 
 class OrdinalDamageLoss(nn.Module):
-    """Class-weighted CE + squared-EMD ordinal term over building pixels only.
-
-    Non-building pixels carry `IGNORE_INDEX` so the damage head never spends capacity on
-    background (localization owns that). `emd_weight` trades ordinal-distance sensitivity
-    against the per-class CE.
-    """
+    """CE + squared-EMD over building pixels; background carries IGNORE_INDEX so the head skips it."""
 
     def __init__(self, class_weights: torch.Tensor | None = None, emd_weight: float = 1.0) -> None:
         super().__init__()
@@ -56,7 +45,7 @@ class OrdinalDamageLoss(nn.Module):
         flat_logits = logits.permute(0, 2, 3, 1).reshape(-1, n_classes)
         flat_target = target.reshape(-1)
         valid = flat_target != IGNORE_INDEX
-        # A background-only crop has no building pixels; CE would be nan, so contribute zero.
+        # Background-only crop: CE would be nan; contribute zero instead.
         if not bool(valid.any()):
             return logits.sum() * 0.0
         ce = self.ce(logits, target)

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
@@ -73,6 +73,40 @@ class TrainConfig:
     pool_op: str = "percentile"
     pool_percentile: float = 80.0
     temperature: float = 1.0
+
+    # OSM building source used when buildings.source == "osm" (portable across events).
+    osm_source: str = "raw_data_api"
+    osm_tag_families: list[dict[str, str]] = field(
+        default_factory=lambda: [{"key": "building", "status": "standing"}]
+    )
+
+    # Damage output schema + provenance strings written into damage.geojson.
+    damage_output_schema: list[str] = field(
+        default_factory=lambda: [
+            "osm_id",
+            "osm_type",
+            "building",
+            "osm_status",
+            "damage_class",
+            "damage",
+            "damage_confidence",
+            "damage_model",
+            "imagery_pre",
+            "imagery_post",
+        ]
+    )
+    damage_label_map: dict[int, str] = field(
+        default_factory=lambda: {
+            -1: "no-data",
+            0: "no-damage",
+            1: "minor-damage",
+            2: "major-damage",
+            3: "destroyed",
+        }
+    )
+    damage_provenance_imagery_pre: str = ""
+    damage_provenance_imagery_post: str = ""
+    damage_provenance_damage_model: str = ""
 
 
 def load_config(path: str | Path | None, overrides: list[str] | None = None) -> DictConfig:

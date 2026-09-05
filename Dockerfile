@@ -23,7 +23,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
 
-FROM python:3.13-slim-bookworm
+FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates \

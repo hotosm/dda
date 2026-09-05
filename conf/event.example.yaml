@@ -33,6 +33,27 @@ buildings:
 damage:
   ckpt: null
 
+# OSM pull config; used when buildings.source == osm.
+osm_source: raw_data_api              # raw_data_api | postpass
+osm_tag_families:
+  - {key: building, status: standing}
+  # - {key: "destroyed:building", status: destroyed}
+
+damage_output_schema:
+  - osm_id
+  - osm_type
+  - building
+  - osm_status
+  - damage_class
+  - damage
+  - damage_confidence
+  - damage_model
+  - imagery_pre
+  - imagery_post
+damage_provenance_imagery_pre: ""
+damage_provenance_imagery_post: ""
+damage_provenance_damage_model: ""
+
 publish:
   enabled: false
   repo_id: null

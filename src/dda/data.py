@@ -30,8 +30,7 @@ def _disaster(image_name: str) -> str:
 
 
 def _build_transforms(img_size: int, train: bool) -> v2.Compose:
-    """Geometry only; dtype scaling and per-image normalisation are done in the collate so the
-    pre+post channel stack and the integer damage raster are handled correctly."""
+    """Geometry only; scaling and normalisation stay in the collate to share ops across pre+post."""
     if train:
         return v2.Compose(
             [v2.RandomCrop(img_size, pad_if_needed=True), v2.RandomHorizontalFlip(), v2.RandomVerticalFlip()]
@@ -44,11 +43,7 @@ def _to_chw(pil_rgb) -> torch.Tensor:
 
 
 class XbdDamageDataModule(LightningDataModule):
-    """xBD pre/post tiles with event-held-out splits.
-
-    Splitting by disaster (not random tiles) is deliberate: generic geo-FM decoders score well
-    on random splits but collapse on unseen events, which is the regime we deploy in.
-    """
+    """xBD pre/post tiles split by disaster event so val/test measure cross-event generalisation."""
 
     def __init__(
         self,

@@ -59,8 +59,9 @@ minor/major classes.
 
 - Input: building footprints (GeoJSON) + post-disaster RGB GeoTIFF, optionally a pre-disaster
   GeoTIFF aligned to the post grid. Footprints must overlay the post image correctly.
-- Output: the footprints annotated with `damage_class`, `damage`, `confidence`, `review`, and
-  per-class probabilities.
+- Output: the footprints annotated with `damage_class` (0..3, or -1 when the model could not
+  assign a class), `damage` (class label), and `damage_confidence` (mean model probability of the
+  assigned class over the footprint; NaN for no-data rows).
 
 ## Files
 
@@ -71,8 +72,9 @@ minor/major classes.
 
 ## Confidence
 
-Apply `softmax(logits / {temperature})` for calibrated probabilities. Buildings below the
-confidence threshold are flagged for human review.
+Raw logits from the ONNX graph can be turned into calibrated probabilities with
+`softmax(logits / {temperature})`. The pipeline's per-building `damage_confidence` is the mean
+of the assigned class's probability over the footprint pixels.
 
 ## Backbone
 

@@ -80,25 +80,10 @@ def test_fit_buildings_delegates_to_dinov3_finetune(tmp_path, monkeypatch):
     assert result.val_iou_finetuned == pytest.approx(0.61)
 
 
-def test_fit_buildings_from_tm_conflicting_imagery_urls(tmp_path, monkeypatch):
-    poly = {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}
-    aoi_fc = {
-        "type": "FeatureCollection",
-        "features": [{"type": "Feature", "geometry": poly, "properties": {}}],
-    }
-    projects = [
-        tm.TMProject(1, "a", aoi_fc, "https://a/{z}/{x}/{y}.png"),
-        tm.TMProject(2, "b", aoi_fc, "https://b/{z}/{x}/{y}.png"),
-    ]
-    monkeypatch.setattr("dda.pipeline.tm.fetch_tm_project", lambda pid: projects[pid - 1])
-    with pytest.raises(RuntimeError, match="different imagery URLs"):
-        fewshot.fit_buildings_from_tm([1, 2], tmp_path / "out")
-
-
 def test_fit_buildings_from_tm_all_null_imagery_needs_override(tmp_path, monkeypatch):
     aoi_fc = {"type": "FeatureCollection", "features": []}
     monkeypatch.setattr("dda.pipeline.tm.fetch_tm_project", lambda pid: tm.TMProject(pid, "x", aoi_fc, None))
-    with pytest.raises(RuntimeError, match="pass --imagery-tms"):
+    with pytest.raises(RuntimeError, match="no override was set"):
         fewshot.fit_buildings_from_tm([1, 2], tmp_path / "out")
 
 
