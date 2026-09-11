@@ -14,6 +14,11 @@ zoom: 19
 photometric_calibration: true
 stretch_percentiles: true
 keep_raw: false
+# Identity homography instead of SIFT, for cross-source pairs where SIFT drops below the inlier threshold.
+skip_drift: false
+# Post-stretch tone curves; values <1 lift midtones, >1 dampen. null disables.
+pre_gamma: null
+post_gamma: null
 
 buildings:
   source: fair                        # fair | osm | input

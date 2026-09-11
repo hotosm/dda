@@ -65,11 +65,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(png_bytes)
 
     def _resolve_local_cog(self, url: str) -> Path | None:
-        """Return the doc-root-relative file for a same-origin URL, or None."""
+        # Accepts loopback and the request Host so a Tailscale funnel works;
+        # path traversal is caught by relative_to(root).
         if not url:
             return None
         parsed = urllib.parse.urlparse(url)
-        if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        request_host = (self.headers.get("Host") or "").split(":", 1)[0].lower()
+        allowed = {"127.0.0.1", "localhost"}
+        if request_host:
+            allowed.add(request_host)
+        if (parsed.hostname or "").lower() not in allowed:
             return None
         rel = parsed.path.lstrip("/")
         candidate = (Path(self.directory) / rel).resolve()

@@ -1,6 +1,5 @@
-"""Block-tiled damage assessment. Buildings with under 90% pre or post coverage are marked
-class -1 with a reason-specific label (`no-data (no pre)`, `no-data (no post)`) so tile-mosaic
-gaps do not score as confident 'destroyed' and downstream can distinguish the two causes."""
+"""Buildings with under 90% pre or post coverage get class -1 so tile-mosaic gaps do not
+score as confident 'destroyed'."""
 
 import logging
 from dataclasses import dataclass
@@ -23,8 +22,6 @@ log = logging.getLogger(__name__)
 
 NO_DATA_CLASS = -1
 NO_DATA_LABEL = "no-data"
-NO_PRE_LABEL = "no-data (no pre)"
-NO_POST_LABEL = "no-data (no post)"
 
 
 @dataclass
@@ -107,12 +104,9 @@ def run_damage_blocked(
 
 
 def _apply_output_schema(gdf: gpd.GeoDataFrame, cfg: DictConfig) -> gpd.GeoDataFrame:
-    """Remap positive `damage_class` via cfg.damage_label_map; keep reason-specific no-data labels."""
     gdf = gdf.copy()
     label_map = {int(k): str(v) for k, v in cfg.damage_label_map.items()}
-    positive = gdf["damage_class"] >= 0
-    if positive.any():
-        gdf.loc[positive, "damage"] = gdf.loc[positive, "damage_class"].map(label_map)
+    gdf["damage"] = gdf["damage_class"].map(label_map)
     gdf["damage_model"] = cfg.damage_provenance_damage_model
     gdf["imagery_pre"] = cfg.damage_provenance_imagery_pre
     gdf["imagery_post"] = cfg.damage_provenance_imagery_post
@@ -146,7 +140,7 @@ def _process_block(
     )
     block_buildings = buildings.loc[in_core].copy()
     if len(block_buildings) == 0:
-        return _empty_result(buildings.crs)
+        return _empty_from_template(buildings)
 
     read_x0 = max(0, core_x0 - halo)
     read_y0 = max(0, core_y0 - halo)
@@ -175,10 +169,10 @@ def _process_block(
     valid_mask = pre_ok & post_ok
 
     covered_buildings = block_buildings.loc[valid_mask].copy()
-    no_pre_buildings = _label_no_data(block_buildings.loc[~pre_ok].copy(), NO_PRE_LABEL)
-    no_post_buildings = _label_no_data(block_buildings.loc[pre_ok & ~post_ok].copy(), NO_POST_LABEL)
+    no_pre_buildings = _label_no_data(block_buildings.loc[~pre_ok].copy(), NO_DATA_LABEL)
+    no_post_buildings = _label_no_data(block_buildings.loc[pre_ok & ~post_ok].copy(), NO_DATA_LABEL)
 
-    scored = _empty_result(block_buildings.crs)
+    scored = _empty_from_template(block_buildings)
     if len(covered_buildings) > 0:
         prob = sliding_window_prob(
             model,
@@ -231,9 +225,13 @@ def _label_no_data(buildings: gpd.GeoDataFrame, label: str) -> gpd.GeoDataFrame:
     return out
 
 
-def _empty_result(crs) -> gpd.GeoDataFrame:
-    cols = ["damage_class", "damage", "damage_confidence", "geometry"]
-    return gpd.GeoDataFrame({c: [] for c in cols}, geometry="geometry", crs=crs)
+def _empty_from_template(template: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Preserves int dtype of osm_id; concat with an all-NaN placeholder would promote it to float64."""
+    empty = template.iloc[0:0].copy()
+    for col, dtype in (("damage_class", "int64"), ("damage", object), ("damage_confidence", "float64")):
+        if col not in empty.columns:
+            empty[col] = pd.Series(dtype=dtype)
+    return empty
 
 
 def _assign_from_prob(

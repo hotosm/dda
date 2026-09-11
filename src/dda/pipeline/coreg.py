@@ -13,6 +13,7 @@ from PIL import Image
 from rasterio.enums import Resampling
 from rasterio.shutil import copy as rio_shutil_copy
 from rasterio.warp import reproject
+from rasterio.windows import Window
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ SIFT_DECIMATION = 8
 SIFT_LOWE_RATIO = 0.75
 SIFT_RANSAC_REPROJ_PX = 5.0
 SIFT_MIN_INLIERS = 10
+GAMMA_BLOCK_PX = 4096
 
 
 @dataclass
@@ -38,7 +40,7 @@ class DriftResult:
     sift_inliers: int
 
 
-def coregister(
+def coregister(  # noqa: PLR0912
     pre_raw: Path,
     post_raw: Path,
     pre_aligned: Path,
@@ -50,29 +52,50 @@ def coregister(
     stretch_percentiles: bool = True,
     keep_raw: bool = False,
     shift_direction: str = "pre_to_post",
+    pre_gamma: float | None = None,
+    post_gamma: float | None = None,
+    skip_drift: bool = False,
 ) -> DriftResult:
-    """Reproject pre, SIFT+RANSAC homography, optional photometric + stretch, write COGs and checkerboard.
-
-    shift_direction=pre_to_post keeps the post frame authoritative (fAIr on Vantor);
-    post_to_pre keeps the pre frame authoritative (OSM footprints traced against ESRI).
+    """shift_direction picks which frame stays authoritative. skip_drift uses identity
+    homography for cross-source pairs where SIFT drops below the inlier threshold.
     """
     if shift_direction not in ("pre_to_post", "post_to_pre"):
         raise ValueError(f"shift_direction must be pre_to_post or post_to_pre, got {shift_direction!r}")
+    for name, g in (("pre_gamma", pre_gamma), ("post_gamma", post_gamma)):
+        if g is not None and (g <= 0 or g > 5):
+            raise ValueError(f"{name} must be in (0, 5], got {g}")
     pre_aligned.parent.mkdir(parents=True, exist_ok=True)
     drift_json.parent.mkdir(parents=True, exist_ok=True)
 
     _reproject_onto_post(pre_raw, post_raw, pre_aligned)
-    drift = _measure_homography(pre_aligned, post_raw)
+    if skip_drift:
+        log.info("coregister: skip_drift=True; using identity homography (no SIFT)")
+        drift = DriftResult(
+            dy_px=0.0,
+            dx_px=0.0,
+            pixel_size_m=_read_pixel_size_m(post_raw),
+            magnitude_m=0.0,
+            homography=np.eye(3).tolist(),
+            sift_matches=0,
+            sift_inliers=0,
+        )
+    else:
+        drift = _measure_homography(pre_aligned, post_raw)
     homography = np.asarray(drift.homography, dtype=np.float64)
     shutil.copyfile(post_raw, post_aligned)
-    if shift_direction == "pre_to_post":
-        _apply_homography(pre_aligned, homography)
-    else:
-        _apply_homography(post_aligned, np.linalg.inv(homography))
+    if not skip_drift:
+        if shift_direction == "pre_to_post":
+            _apply_homography(pre_aligned, homography)
+        else:
+            _apply_homography(post_aligned, np.linalg.inv(homography))
     if calibrate_photometry:
         _apply_photometric_calibration(pre_aligned, post_aligned)
     if stretch_percentiles:
         _apply_shared_stretch_from_post(pre_aligned, post_aligned)
+    if pre_gamma is not None:
+        _apply_gamma(pre_aligned, pre_gamma, "pre")
+    if post_gamma is not None:
+        _apply_gamma(post_aligned, post_gamma, "post")
     _convert_to_cog(pre_aligned)
     _convert_to_cog(post_aligned)
     _render_checkerboard(pre_aligned, post_aligned, check_png)
@@ -133,6 +156,11 @@ def _decimated_grayscale(src: "rasterio.io.DatasetReader", step: int) -> np.ndar
         resampling=Resampling.average,
     ).astype(np.float32)
     return arr.mean(axis=0)
+
+
+def _read_pixel_size_m(path: Path) -> float:
+    with rasterio.open(path) as src:
+        return _mean_pixel_size_m(src)
 
 
 def _mean_pixel_size_m(src: "rasterio.io.DatasetReader") -> float:
@@ -280,19 +308,25 @@ def _apply_photometric_calibration(pre_aligned: Path, post: Path) -> None:
         [round(s, 1) for s in stds_post],
     )
 
+    scales = [stds_post[b] / stds_pre[b] for b in range(3)]
     tmp = pre_aligned.with_suffix(pre_aligned.suffix + ".calib.tmp")
     with rasterio.open(pre_aligned) as src:
         profile = _gtiff_profile(src.height, src.width, src.crs, src.transform)
+        h, w = src.height, src.width
         with rasterio.open(tmp, "w", **profile) as dst:
-            for band in range(1, 4):
-                arr = src.read(band).astype(np.float32)
-                nodata = arr == 0
-                scale = stds_post[band - 1] / stds_pre[band - 1]
-                out = (arr - means_pre[band - 1]) * scale + means_post[band - 1]
-                out = np.clip(out, 0, 255).astype(np.uint8)
-                out[nodata] = 0
-                dst.write(out, band)
-                del arr, out, nodata
+            for row0 in range(0, h, GAMMA_BLOCK_PX):
+                bh = min(GAMMA_BLOCK_PX, h - row0)
+                for col0 in range(0, w, GAMMA_BLOCK_PX):
+                    bw = min(GAMMA_BLOCK_PX, w - col0)
+                    win = Window(col0, row0, bw, bh)  # ty: ignore[too-many-positional-arguments]
+                    arr = src.read([1, 2, 3], window=win).astype(np.float32)
+                    nodata = arr.sum(axis=0) == 0
+                    for b in range(3):
+                        arr[b] = (arr[b] - means_pre[b]) * scales[b] + means_post[b]
+                    out = np.clip(arr, 0, 255).astype(np.uint8)
+                    for b in range(3):
+                        out[b][nodata] = 0
+                    dst.write(out, window=win)
     tmp.replace(pre_aligned)
 
 
@@ -348,19 +382,26 @@ def _compute_stretch_bounds(
 
 
 def _apply_stretch_bounds(path: Path, lows: list[float], highs: list[float]) -> None:
-    """Rescale each band of `path` in place so [lo, hi] maps to [0, 255]."""
+    """Block-tiled to keep peak memory bounded on large rasters."""
+    spans = [highs[b] - lows[b] for b in range(3)]
     tmp = path.with_suffix(path.suffix + ".stretch.tmp")
     with rasterio.open(path) as src:
         profile = _gtiff_profile(src.height, src.width, src.crs, src.transform)
+        h, w = src.height, src.width
         with rasterio.open(tmp, "w", **profile) as dst:
-            for band in range(1, 4):
-                arr = src.read(band).astype(np.float32)
-                nodata = arr == 0
-                scaled = (arr - lows[band - 1]) * 255.0 / (highs[band - 1] - lows[band - 1])
-                out = np.clip(scaled, 0, 255).astype(np.uint8)
-                out[nodata] = 0
-                dst.write(out, band)
-                del arr, scaled, out, nodata
+            for row0 in range(0, h, GAMMA_BLOCK_PX):
+                bh = min(GAMMA_BLOCK_PX, h - row0)
+                for col0 in range(0, w, GAMMA_BLOCK_PX):
+                    bw = min(GAMMA_BLOCK_PX, w - col0)
+                    win = Window(col0, row0, bw, bh)  # ty: ignore[too-many-positional-arguments]
+                    arr = src.read([1, 2, 3], window=win).astype(np.float32)
+                    nodata = arr.sum(axis=0) == 0
+                    for b in range(3):
+                        arr[b] = (arr[b] - lows[b]) * 255.0 / spans[b]
+                    out = np.clip(arr, 0, 255).astype(np.uint8)
+                    for b in range(3):
+                        out[b][nodata] = 0
+                    dst.write(out, window=win)
     tmp.replace(path)
 
 
@@ -388,6 +429,26 @@ def _apply_shared_stretch_from_post(pre_aligned: Path, post_aligned: Path) -> No
         return
     _apply_stretch_bounds(post_aligned, *bounds)
     _apply_stretch_bounds(pre_aligned, *bounds)
+
+
+def _apply_gamma(path: Path, gamma: float, label: str) -> None:
+    """LUT preserves nodata (0 stays 0) and saturates highlights (255 stays 255)."""
+    lut = np.zeros(256, dtype=np.uint8)
+    lut[1:] = np.clip(np.round(((np.arange(1, 256) / 255.0) ** gamma) * 255.0), 0, 255).astype(np.uint8)
+    log.info("%s gamma %.3f: 0->0 mid128->%d hi255->%d", label, gamma, int(lut[128]), int(lut[255]))
+    tmp = path.with_suffix(path.suffix + ".gamma.tmp")
+    with rasterio.open(path) as src:
+        profile = _gtiff_profile(src.height, src.width, src.crs, src.transform)
+        h, w = src.height, src.width
+        with rasterio.open(tmp, "w", **profile) as dst:
+            for row0 in range(0, h, GAMMA_BLOCK_PX):
+                bh = min(GAMMA_BLOCK_PX, h - row0)
+                for col0 in range(0, w, GAMMA_BLOCK_PX):
+                    bw = min(GAMMA_BLOCK_PX, w - col0)
+                    win = Window(col0, row0, bw, bh)  # ty: ignore[too-many-positional-arguments]
+                    arr = src.read([1, 2, 3], window=win)
+                    dst.write(lut[arr], window=win)
+    tmp.replace(path)
 
 
 def _render_checkerboard(

@@ -242,6 +242,7 @@ def build_composite(  # noqa: PLR0915  # single macroblock loop with closures; s
     handles_lock = threading.Lock()
 
     def get_vrts():
+        # No nodata on the VRT: GDAL rewrites truly-0 source pixels to 1, which stretches map back to 0.
         if not hasattr(tls, "vrts"):
             srcs, vrts = [], []
             for p in paths:
@@ -253,7 +254,6 @@ def build_composite(  # noqa: PLR0915  # single macroblock loop with closures; s
                     width=width,
                     height=height,
                     resampling=Resampling.bilinear,
-                    nodata=0,
                 )
                 srcs.append(src)
                 vrts.append(vrt)

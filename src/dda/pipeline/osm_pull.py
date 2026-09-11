@@ -43,6 +43,15 @@ def pull_osm_buildings(
         if len(gdf) == 0:
             log.info("rda family %s: 0 features", key)
             continue
+        if "osm_id" not in gdf.columns:
+            log.warning(
+                "rda family %s: %d features but missing osm_id (got %s); dropping cache and skipping",
+                key,
+                len(gdf),
+                gdf.columns.tolist(),
+            )
+            zip_path.unlink(missing_ok=True)
+            continue
         frames.append(_shape_family_frame(gdf, key=key, status=status))
         log.info("rda family %s (%s): %d features", key, status, len(frames[-1]))
 
@@ -109,15 +118,40 @@ def _extract_geojson(zip_path: Path) -> gpd.GeoDataFrame:
 def _shape_family_frame(gdf: gpd.GeoDataFrame, *, key: str, status: str) -> gpd.GeoDataFrame:
     if "osm_id" not in gdf.columns:
         raise RuntimeError(f"rda output for {key} missing osm_id; got {gdf.columns.tolist()}")
-    if key not in gdf.columns:
-        cols = gdf.columns.tolist()
-        raise RuntimeError(f"rda output for {key} missing the requested tag column; got {cols}")
-    verified = gdf[gdf[key].notna() & (gdf[key].astype(str).str.strip() != "")].copy()
+    values = _extract_tag_values(gdf, key)
+    mask = values.notna() & (values.astype(str).str.strip() != "")
+    verified = gdf.loc[mask].copy()
     dropped = len(gdf) - len(verified)
     if dropped:
         log.info("rda family %s: dropped %d rows with empty %s tag", key, dropped, key)
     out = verified[["osm_id", "geometry"]].copy()
     out["osm_type"] = verified["osm_type"] if "osm_type" in verified.columns else "ways_poly"
-    out["building"] = verified[key].astype(str)
+    out["building"] = values.loc[mask].astype(str)
     out["osm_status"] = status
     return out[list(OUTPUT_COLUMNS)].to_crs("EPSG:4326")
+
+
+def _extract_tag_values(gdf: gpd.GeoDataFrame, key: str) -> pd.Series:
+    """RDA exposes each tag as its own column or bundles them inside `tags` (dict or JSON string)."""
+    if key in gdf.columns:
+        return gdf[key]
+    if "tags" not in gdf.columns:
+        raise RuntimeError(
+            f"rda output for {key} has neither a {key!r} column nor a `tags` column; "
+            f"got {gdf.columns.tolist()}"
+        )
+    return gdf["tags"].map(lambda t: _lookup_tag(t, key))
+
+
+def _lookup_tag(raw: Any, key: str) -> str | None:
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw.get(key)
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return parsed.get(key) if isinstance(parsed, dict) else None
+    return None

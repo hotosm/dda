@@ -48,6 +48,10 @@
   .meta .dot { width: 6px; height: 6px; background: var(--red); border-radius: 50%; flex: 0 0 auto; }
   .meta .clear { border: 0; background: transparent; padding: 0 0 0 6px; color: var(--muted); cursor: pointer; font: 500 12px/1 var(--sans); }
   .meta .clear:hover { color: var(--red); }
+  .meta .copy-tms { border: 0; background: transparent; padding: 0 4px 0 6px; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; }
+  .meta .copy-tms:hover { color: var(--ink); }
+  .meta .copy-tms.ok { color: var(--red); }
+  .meta .copy-tms[disabled] { opacity: .35; cursor: not-allowed; }
 
   /* Central hairline visible in empty/half state */
   #hairline { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--rule); z-index: 300; transform: translateX(-.5px); pointer-events: none; }
@@ -191,8 +195,8 @@
   <!-- Eyebrows and meta chips -->
   <div class="eyebrow pre" id="eyebrow-pre">Before</div>
   <div class="eyebrow post" id="eyebrow-post">After</div>
-  <div class="meta pre" id="meta-pre" hidden><span class="dot"></span><span class="text"></span><button class="clear" title="Clear before"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M6 18L18 6"/></svg></button></div>
-  <div class="meta post" id="meta-post" hidden><span class="dot"></span><span class="text"></span><button class="clear" title="Clear after"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M6 18L18 6"/></svg></button></div>
+  <div class="meta pre" id="meta-pre" hidden><span class="dot"></span><span class="text"></span><button class="copy-tms" title="Copy TMS URL"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button><button class="clear" title="Clear before"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M6 18L18 6"/></svg></button></div>
+  <div class="meta post" id="meta-post" hidden><span class="dot"></span><span class="text"></span><button class="copy-tms" title="Copy TMS URL"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></button><button class="clear" title="Clear after"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M6 18L18 6"/></svg></button></div>
 
   <!-- Empty-state cards -->
   <div class="empty-card pre" id="empty-pre" data-side="pre">
@@ -538,7 +542,12 @@ async function resolveSource(input) {
       }
     } catch (_) { /* fall through to raw treatment */ }
   }
-  if (/^https?:\/\/(127\.|localhost|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(trimmed)) {
+  // Same-origin and private-LAN URLs go through /tiles/ because titiler cannot reach them.
+  const sameOrigin = trimmed.startsWith(location.origin + "/");
+  if (
+    sameOrigin
+    || /^https?:\/\/(127\.|localhost|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(trimmed)
+  ) {
     const base = new URL(trimmed);
     const tileUrl = `${base.protocol}//${base.host}/tiles/{z}/{x}/{y}?url=${encodeURIComponent(trimmed)}`;
     return { kind: "tms", tileUrl, title: trimmed.split("/").pop() || trimmed, maxZoom: 22 };
@@ -600,10 +609,30 @@ function clearImagery(side) {
   writeShareUrl();
 }
 
+function tmsUrlFor(source) {
+  // Public COGs route via titiler; local or same-origin sources cannot be shared externally.
+  if (!source) return null;
+  if (source.kind === "titiler" && source.cogUrl) return `${TITILER}?url=${encodeURIComponent(source.cogUrl)}`;
+  if (source.kind === "tms" && source.tileUrl) return source.tileUrl;
+  return null;
+}
+
+async function copyTmsUrl(side, btn) {
+  const url = tmsUrlFor(state[side]);
+  if (!url) { status("no shareable TMS URL for this source (local or same-origin only)", 3000, "err"); return; }
+  await navigator.clipboard.writeText(url);
+  btn.classList.add("ok");
+  status(`Copied ${side} TMS URL`, 2000, "ok");
+  setTimeout(() => btn.classList.remove("ok"), 1200);
+}
+
 function showChip(side, title) {
   const meta = $(`meta-${side}`);
   meta.hidden = false;
   meta.querySelector(".text").textContent = title || "";
+  const copyBtn = meta.querySelector(".copy-tms");
+  copyBtn.disabled = tmsUrlFor(state[side]) === null;
+  copyBtn.title = copyBtn.disabled ? "Local file, cannot share as TMS" : "Copy TMS URL";
   $(`eyebrow-${side}`).classList.add("loaded");
 }
 function hideChip(side) {
@@ -849,17 +878,23 @@ function styleOverlay(item) {
 }
 
 function addOverlayFromJson(name, geojson, colour, sourceUrl, extra = {}) {
+  const explicitColour = !!colour;
   colour = colour || PALETTE[state.swatchIndex++ % PALETTE.length];
   const attrs = detectCategoricalAttrs(geojson);
   const autoStyleBy = attrs.find((a) => a.key === "damage")?.key || null;
+  let styleBy;
+  if (extra.styleBy === "none") styleBy = null;
+  else if (extra.styleBy) styleBy = attrs.some((a) => a.key === extra.styleBy) ? extra.styleBy : autoStyleBy;
+  else styleBy = explicitColour ? null : autoStyleBy;
   const item = {
     name, colour, visible: true,
     geom: firstGeom(geojson),
     attrs,
-    styleBy: autoStyleBy,
+    styleBy,
     valueColours: null,
     hiddenValues: new Set(),
     parquetUrl: extra.parquetUrl || null,
+    urlHints: extra.urlHints || null,
   };
   if (item.styleBy) {
     const values = attrs.find((a) => a.key === item.styleBy).values;
@@ -892,21 +927,38 @@ function addOverlayFromJson(name, geojson, colour, sourceUrl, extra = {}) {
   }
 }
 
-async function addOverlayFromUrl(url) {
+async function addOverlayFromUrl(url, opts = {}) {
+  const name = opts.name || url.split("/").pop() || url;
+  const extra = {styleBy: opts.by || null, urlHints: opts.hints || null};
   try {
-    status(`Loading ${url}`, 0);
+    status(`Loading ${name}`, 0);
     if (/\.parquet(\?|$)/i.test(url)) {
       const fc = await queryParquet(url);
-      addOverlayFromJson(url.split("/").pop() || url, fc, null, url, {parquetUrl: url});
+      addOverlayFromJson(name, fc, opts.color || null, url, {...extra, parquetUrl: url});
       status(`Overlay added (${fc.features.length} rows)`);
       return;
     }
     const r = await fetch(url);
     if (!r.ok) throw new Error(`${r.status}`);
     const j = await r.json();
-    addOverlayFromJson(url.split("/").pop() || url, j, null, url);
+    addOverlayFromJson(name, j, opts.color || null, url, extra);
     status("Overlay added");
   } catch (exc) { status(`Overlay failed: ${exc.message}`, 3000, "err"); }
+}
+
+/** Split a layer spec `<url>|name=..|color=..|by=..` (by=none forces single-colour). */
+function parseLayerSpec(spec) {
+  const [url, ...rest] = spec.split("|");
+  const hints = {};
+  for (const part of rest) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    const k = part.slice(0, eq).trim().toLowerCase();
+    const v = part.slice(eq + 1).trim();
+    if (k === "name" || k === "by") hints[k] = v;
+    else if (k === "color" || k === "colour") hints.color = v.startsWith("#") ? v : `#${v}`;
+  }
+  return { url, hints };
 }
 
 let _duckdb = null;
@@ -1012,7 +1064,7 @@ function renderOverlays() {
     if (item.attrs && item.attrs.length) {
       const styleRow = document.createElement("li");
       styleRow.style.cssText = "list-style:none;margin-top:4px;padding:0 8px 8px;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);";
-      const opts = ['<option value="">— single colour —</option>']
+      const opts = ['<option value="">single colour</option>']
         .concat(item.attrs.map((a) => `<option value="${escapeHtml(a.key)}"${a.key === item.styleBy ? " selected" : ""}>${escapeHtml(a.key)}</option>`))
         .join("");
       styleRow.innerHTML = `<span>Style by</span>
@@ -1321,7 +1373,16 @@ function writeShareUrl() {
   }
 
   for (const o of state.overlays) {
-    if (o.layer._sourceUrl) { params.append("layer", o.layer._sourceUrl); continue; }
+    if (o.layer._sourceUrl) {
+      const h = o.urlHints || {};
+      const suffix = [
+        h.name ? `|name=${h.name}` : "",
+        h.color ? `|color=${h.color}` : "",
+        h.by ? `|by=${h.by}` : "",
+      ].join("");
+      params.append("layer", o.layer._sourceUrl + suffix);
+      continue;
+    }
     const raw = o.layer._sourceGeojson;
     if (!raw) continue;
     // Drawn rectangles are polygons that trace their own bbox exactly: encode as bbox for a
@@ -1425,9 +1486,9 @@ function boot() {
     const side = meta.classList.contains("pre") ? "pre" : "post";
     meta.title = "Click to change imagery";
     meta.onclick = (e) => {
-      // Clear button lives inside the chip; catch that click first, otherwise treat any
-      // click on the chip as "open the same imagery modal again".
-      if (e.target.classList.contains("clear")) { e.stopPropagation(); clearImagery(side); return; }
+      const el = e.target.closest("button") || e.target;
+      if (el.classList.contains("clear")) { e.stopPropagation(); clearImagery(side); return; }
+      if (el.classList.contains("copy-tms")) { e.stopPropagation(); copyTmsUrl(side, el); return; }
       openModal(side);
     };
   });
@@ -1516,7 +1577,8 @@ async function applyUrlParams() {
       catch (exc) { status(`Inline layer: ${exc.message}`, 5000, "err"); }
       continue;
     }
-    await addOverlayFromUrl(spec);
+    const { url, hints } = parseLayerSpec(spec);
+    await addOverlayFromUrl(url, {name: hints.name, color: hints.color, by: hints.by, hints});
   }
   // Legacy compatibility: an old shared URL may still carry ?aoi=..., which we now treat
   // as just another layer.

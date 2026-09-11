@@ -8,12 +8,16 @@ aoi: aoi_nepal_flood.geojson
 tm_aoi_project: null
 
 pre_img: https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
-post_img: https://production-raw-data-api.s3.amazonaws.com/ISO3/NPL/disasters/nepal-flood/2026-08-28/vantor_composite_v3.tif
+post_img: outputs/nepal_flood_upperstream/vantor/composite_v6/post_composite.tif
 zoom: 18
 photometric_calibration: true
 stretch_percentiles: true
 keep_raw: true
 shift_direction: post_to_pre
+# Cross-source pair, SIFT drops below the inlier threshold; composite is already on the pre grid.
+skip_drift: true
+pre_gamma: 1.15
+post_gamma: 0.85
 
 buildings:
   source: osm
@@ -30,9 +34,9 @@ buildings:
     zoom: 18
 
 damage:
-  ckpt: null
+  ckpt: outputs/nepal_flood_upperstream/vantor/fewshot_damage_ft02/ckpts/ft-09-0.4471.ckpt
 
-# raw-data-api + destroyed:building lifecycle, per schema audit.
+# raw-data-api pulls both standing and destroyed:building lifecycle features.
 osm_source: raw_data_api
 osm_tag_families:
   - { key: building, status: standing }
@@ -42,12 +46,9 @@ damage_output_schema:
   - osm_id
   - osm_type
   - building
-  - osm_status
   - damage_class
   - damage
   - damage_confidence
-  - imagery_pre
-  - imagery_post
 damage_label_map:
   -1: no-data
   0: no-visible-damage

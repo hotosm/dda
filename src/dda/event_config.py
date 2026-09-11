@@ -91,6 +91,10 @@ class EventConfig:
     damage_provenance_imagery_post: str = ""
     damage_provenance_damage_model: str = ""
 
+    pre_gamma: float | None = None
+    post_gamma: float | None = None
+    skip_drift: bool = False
+
 
 def load_event_config(path: str | Path, overrides: list[str] | None = None) -> DictConfig:
     """Load YAML into the EventConfig schema; overrides use OmegaConf dotlist syntax."""

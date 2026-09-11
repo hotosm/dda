@@ -80,6 +80,9 @@ def _stage_prepare(cfg: DictConfig, paths: PipelinePaths) -> None:
         stretch_percentiles=cfg.stretch_percentiles,
         keep_raw=cfg.keep_raw,
         shift_direction=cfg.shift_direction,
+        pre_gamma=cfg.pre_gamma,
+        post_gamma=cfg.post_gamma,
+        skip_drift=cfg.skip_drift,
     )
 
 
