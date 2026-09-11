@@ -1369,7 +1369,7 @@ function setOsmOverlay(on) {
     if (!state.osmLayer) {
       const osm = BASEMAPS.find((b) => b.title === "OpenStreetMap");
       state.osmLayer = L.tileLayer(osm.tileUrl, {
-        attribution: osm.attribution, maxZoom: osm.maxZoom, subdomains: osm.subdomains, opacity: 0.65, zIndex: 450,
+        attribution: osm.attribution, maxZoom: osm.maxZoom, subdomains: osm.subdomains, opacity: 1, zIndex: 450,
       }).addTo(state.map);
     }
     btn.classList.add("on");
