@@ -46,7 +46,6 @@ damage_output_schema:
   - osm_id
   - osm_type
   - building
-  - damage_class
   - damage
   - damage_confidence
 damage_label_map:
@@ -55,6 +54,12 @@ damage_label_map:
   1: minor-damage
   2: major-damage
   3: destroyed
+damage_palette:
+  no-visible-damage: "#d9d0c9"
+  minor-damage: "#ffd400"
+  major-damage: "#ff8c00"
+  destroyed: "#d73f3f"
+  no-data: "#6b7280"
 damage_provenance_imagery_pre: "ESRI World Imagery"
 damage_provenance_imagery_post: "Vantor 9-scene composite (WV02/WV03/LG01), 2026-08-27..28"
 damage_provenance_damage_model: "kshitijrajsharma/dinov3-damage-assessment @ ft-01-0.4607 (OSM-tuned, binary head)"

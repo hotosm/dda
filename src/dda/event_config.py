@@ -90,6 +90,7 @@ class EventConfig:
     damage_provenance_imagery_pre: str = ""
     damage_provenance_imagery_post: str = ""
     damage_provenance_damage_model: str = ""
+    damage_palette: dict[str, str] = field(default_factory=dict)
 
     pre_gamma: float | None = None
     post_gamma: float | None = None

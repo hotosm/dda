@@ -706,14 +706,17 @@ function ensureGrabHandler() {
 
 /** xView2 semantic palette so damage.geojson auto-colours right without a picker click. */
 const DAMAGE_PALETTE = {
-  "no-damage":        "#21c968",
-  "minor-damage":     "#ffd400",
-  "major-damage":     "#ff8c00",
-  "destroyed":        "#d73f3f",
-  "no-data (no pre)":  "#888888",
-  "no-data (no post)": "#888888",
-  "un-classified":    "#888888",
+  "no-visible-damage": "#d9d0c9",
+  "no-damage":         "#d9d0c9",
+  "minor-damage":      "#ffd400",
+  "major-damage":      "#ff8c00",
+  "destroyed":         "#d73f3f",
+  "no-data":           "#6b7280",
+  "no-data (no pre)":  "#6b7280",
+  "no-data (no post)": "#6b7280",
+  "un-classified":     "#6b7280",
 };
+// Callers pass an event-specific override via `layer=<url>|palette=k:hex,...`; these are the fallback defaults.
 
 /** Cycle of accessible hues for unknown categorical attributes. */
 const CATEGORICAL_PALETTE = [
@@ -895,10 +898,12 @@ function addOverlayFromJson(name, geojson, colour, sourceUrl, extra = {}) {
     hiddenValues: new Set(),
     parquetUrl: extra.parquetUrl || null,
     urlHints: extra.urlHints || null,
+    paletteOverride: extra.palette || null,
   };
   if (item.styleBy) {
     const values = attrs.find((a) => a.key === item.styleBy).values;
     item.valueColours = buildValueColours(item.styleBy, values);
+    if (item.paletteOverride) Object.assign(item.valueColours, item.paletteOverride);
   }
   const layer = L.geoJSON(geojson, styleOverlay(item));
   layer._sourceUrl = sourceUrl;
@@ -929,7 +934,7 @@ function addOverlayFromJson(name, geojson, colour, sourceUrl, extra = {}) {
 
 async function addOverlayFromUrl(url, opts = {}) {
   const name = opts.name || url.split("/").pop() || url;
-  const extra = {styleBy: opts.by || null, urlHints: opts.hints || null};
+  const extra = {styleBy: opts.by || null, urlHints: opts.hints || null, palette: opts.palette || null};
   try {
     status(`Loading ${name}`, 0);
     if (/\.parquet(\?|$)/i.test(url)) {
@@ -946,7 +951,7 @@ async function addOverlayFromUrl(url, opts = {}) {
   } catch (exc) { status(`Overlay failed: ${exc.message}`, 3000, "err"); }
 }
 
-/** Split a layer spec `<url>|name=..|color=..|by=..` (by=none forces single-colour). */
+/** Split a layer spec `<url>|name=..|color=..|by=..|palette=k:hex,k:hex` (by=none forces single-colour). */
 function parseLayerSpec(spec) {
   const [url, ...rest] = spec.split("|");
   const hints = {};
@@ -957,6 +962,16 @@ function parseLayerSpec(spec) {
     const v = part.slice(eq + 1).trim();
     if (k === "name" || k === "by") hints[k] = v;
     else if (k === "color" || k === "colour") hints.color = v.startsWith("#") ? v : `#${v}`;
+    else if (k === "palette") {
+      hints.palette = {};
+      for (const pair of v.split(",")) {
+        const colon = pair.lastIndexOf(":");
+        if (colon < 0) continue;
+        const pk = pair.slice(0, colon).trim();
+        const ph = pair.slice(colon + 1).trim();
+        if (pk && ph) hints.palette[pk] = ph.startsWith("#") ? ph : `#${ph}`;
+      }
+    }
   }
   return { url, hints };
 }
@@ -1076,6 +1091,7 @@ function renderOverlays() {
         if (item.styleBy) {
           const values = item.attrs.find((a) => a.key === item.styleBy).values;
           item.valueColours = buildValueColours(item.styleBy, values);
+          if (item.paletteOverride) Object.assign(item.valueColours, item.paletteOverride);
         }
         item.layer.setStyle(styleOverlay(item).style);
         refreshHitTargets(item);
@@ -1375,10 +1391,14 @@ function writeShareUrl() {
   for (const o of state.overlays) {
     if (o.layer._sourceUrl) {
       const h = o.urlHints || {};
+      const paletteStr = h.palette
+        ? Object.entries(h.palette).map(([k, v]) => `${k}:${v}`).join(",")
+        : "";
       const suffix = [
         h.name ? `|name=${h.name}` : "",
         h.color ? `|color=${h.color}` : "",
         h.by ? `|by=${h.by}` : "",
+        paletteStr ? `|palette=${paletteStr}` : "",
       ].join("");
       params.append("layer", o.layer._sourceUrl + suffix);
       continue;
@@ -1557,6 +1577,7 @@ async function applyUrlParams() {
     const [lat, lng, z] = center.split(",").map(Number);
     if ([lat, lng, z].every(Number.isFinite)) state.map.setView([lat, lng], z);
   }
+  if (params.get("panel") === "layers") $("layers-sheet").classList.add("on");
   for (const side of ["pre", "post"]) {
     const val = params.get(side);
     if (!val) continue;
@@ -1578,7 +1599,7 @@ async function applyUrlParams() {
       continue;
     }
     const { url, hints } = parseLayerSpec(spec);
-    await addOverlayFromUrl(url, {name: hints.name, color: hints.color, by: hints.by, hints});
+    await addOverlayFromUrl(url, {name: hints.name, color: hints.color, by: hints.by, palette: hints.palette, hints});
   }
   // Legacy compatibility: an old shared URL may still carry ?aoi=..., which we now treat
   // as just another layer.
