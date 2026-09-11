@@ -181,6 +181,7 @@
   <div class="brand">DDA / <em>Compare</em></div>
   <div class="event">Event <strong id="event-name">not set</strong></div>
   <div class="actions">
+    <button class="topaction" id="btn-osm" title="Toggle OpenStreetMap overlay">OSM</button>
     <button class="topaction" id="btn-layers">Layers <span class="badge" id="layers-count" hidden>0</span></button>
     <button class="topaction" id="btn-share">Share</button>
   </div>
@@ -332,6 +333,7 @@ const state = {
   vantorScenesCache: {},
   hoverRect: null,
   aoiDrawing: false,
+  osmLayer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1360,6 +1362,25 @@ function renderVantorScenes(scenes) {
 
 /* ---- share ---- */
 
+/** Toggle an OSM Mapnik reference overlay above the imagery split. */
+function setOsmOverlay(on) {
+  const btn = $("btn-osm");
+  if (on) {
+    if (!state.osmLayer) {
+      const osm = BASEMAPS.find((b) => b.title === "OpenStreetMap");
+      state.osmLayer = L.tileLayer(osm.tileUrl, {
+        attribution: osm.attribution, maxZoom: osm.maxZoom, subdomains: osm.subdomains, opacity: 0.65, zIndex: 450,
+      }).addTo(state.map);
+    }
+    btn.classList.add("on");
+  } else if (state.osmLayer) {
+    state.map.removeLayer(state.osmLayer);
+    state.osmLayer = null;
+    btn.classList.remove("on");
+  }
+  writeShareUrl();
+}
+
 /** Cap for inline layer/AOI JSON in the URL; anything bigger is skipped with a warning. */
 const INLINE_JSON_MAX = 8000;
 
@@ -1422,6 +1443,7 @@ function writeShareUrl() {
   if (c && z != null) params.set("center", `${c.lat.toFixed(5)},${c.lng.toFixed(5)},${z.toFixed(1)}`);
   const ev = $("event-name").textContent;
   if (ev && ev !== "not set") params.set("event", ev);
+  if (state.osmLayer) params.set("osm", "on");
 
   state.unshareable = skipped;
   $("share-url").value = `${location.origin}${location.pathname}?${params}`;
@@ -1541,6 +1563,7 @@ function boot() {
     if (p && state.vantorScenesCache[p]) renderVantorScenes(state.vantorScenesCache[p]);
   };
 
+  $("btn-osm").onclick = () => setOsmOverlay(!state.osmLayer);
   $("btn-layers").onclick = () => $("layers-sheet").classList.toggle("on");
   $("layers-close").onclick = () => $("layers-sheet").classList.remove("on");
   $("layer-add").onclick = () => {
@@ -1578,6 +1601,7 @@ async function applyUrlParams() {
     if ([lat, lng, z].every(Number.isFinite)) state.map.setView([lat, lng], z);
   }
   if (params.get("panel") === "layers") $("layers-sheet").classList.add("on");
+  if (params.get("osm") === "on") setOsmOverlay(true);
   for (const side of ["pre", "post"]) {
     const val = params.get(side);
     if (!val) continue;
