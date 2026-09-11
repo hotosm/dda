@@ -910,16 +910,6 @@ function addOverlayFromJson(name, geojson, colour, sourceUrl, extra = {}) {
   const layer = L.geoJSON(geojson, styleOverlay(item));
   layer._sourceUrl = sourceUrl;
   layer._sourceGeojson = sourceUrl ? null : geojson;
-  layer.bindPopup((l) => {
-    const p = l.feature?.properties || {};
-    const rows = Object.entries(p).slice(0, 20)
-      .map(([k, v]) => `<tr><td style="color:#6B7280;padding-right:10px;white-space:nowrap;font-weight:500;">${escapeHtml(k)}</td><td style="color:#111;">${escapeHtml(v)}</td></tr>`)
-      .join("");
-    return `<div style="min-width:180px;font-family:system-ui,sans-serif;font-size:12px;color:#111;line-height:1.4;">
-      <div style="font-weight:600;font-size:13px;margin-bottom:6px;">${escapeHtml(l.feature?.id || name)}</div>
-      <table style="border-spacing:0;border-collapse:collapse;width:100%;"><tbody>${rows || '<tr><td style="color:#888;">(no properties)</td></tr>'}</tbody></table>
-    </div>`;
-  });
   item.layer = layer;
   const featureCount = geojson?.features?.length ?? 0;
   item.cluster = featureCount > CLUSTER_MIN_FEATURES ? buildClusterLayer(name, geojson) : null;
@@ -1362,6 +1352,59 @@ function renderVantorScenes(scenes) {
 
 /* ---- share ---- */
 
+function _ringContains(lng, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi + 1e-30) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
+function geomContains(lng, lat, geom) {
+  if (!geom) return false;
+  if (geom.type === "Polygon") {
+    if (!_ringContains(lng, lat, geom.coordinates[0])) return false;
+    for (let i = 1; i < geom.coordinates.length; i++) if (_ringContains(lng, lat, geom.coordinates[i])) return false;
+    return true;
+  }
+  if (geom.type === "MultiPolygon") return geom.coordinates.some((poly) => geomContains(lng, lat, { type: "Polygon", coordinates: poly }));
+  return false;
+}
+
+/** Group features under (lng,lat) by overlay; top-of-stack layers come first. */
+function featuresAt(latlng) {
+  const groups = [];
+  for (let i = state.overlays.length - 1; i >= 0; i--) {
+    const o = state.overlays[i];
+    if (!o.visible) continue;
+    const hits = [];
+    o.layer.eachLayer((sub) => {
+      const f = sub.feature;
+      if (f && geomContains(latlng.lng, latlng.lat, f.geometry)) hits.push(f);
+    });
+    if (hits.length) groups.push({ name: o.name, colour: o.colour, features: hits });
+  }
+  return groups;
+}
+
+function renderCombinedPopup(groups) {
+  return `<div style="min-width:220px;font-family:system-ui,sans-serif;color:#111;line-height:1.4;font-size:12px;">` + groups.map((g) => {
+    const first = g.features[0];
+    const rows = Object.entries(first?.properties || {}).slice(0, 20)
+      .map(([k, v]) => `<tr><td style="color:#6B7280;padding-right:10px;white-space:nowrap;font-weight:500;">${escapeHtml(k)}</td><td style="color:#111;">${escapeHtml(v)}</td></tr>`)
+      .join("");
+    const more = g.features.length > 1 ? ` <span style="color:#6B7280;font-weight:400;font-size:11px;">(+${g.features.length - 1})</span>` : "";
+    return `<div style="margin:0 0 10px;">
+      <div style="font-weight:600;font-size:12px;margin-bottom:4px;display:flex;align-items:center;gap:6px;">
+        <span style="width:8px;height:8px;background:${g.colour};display:inline-block;border-radius:2px;"></span>
+        ${escapeHtml(g.name)}${more}
+      </div>
+      <table style="border-spacing:0;border-collapse:collapse;width:100%;"><tbody>${rows || '<tr><td style="color:#888;">(no properties)</td></tr>'}</tbody></table>
+    </div>`;
+  }).join(`<div style="border-top:1px solid #E5E7EB;margin:6px 0 8px;"></div>`) + `</div>`;
+}
+
 /** Toggle an OSM Mapnik reference overlay above the imagery split. */
 function setOsmOverlay(on) {
   const btn = $("btn-osm");
@@ -1520,6 +1563,11 @@ function boot() {
   L.control.attribution({ position: "bottomleft" }).addTo(state.map);
   state.map.on("moveend zoomend", writeShareUrl);
   state.map.on("zoomend", refreshClusterVisibility);
+  state.map.on("click", (e) => {
+    const groups = featuresAt(e.latlng);
+    if (!groups.length) return;
+    L.popup({ maxHeight: 380 }).setLatLng(e.latlng).setContent(renderCombinedPopup(groups)).openOn(state.map);
+  });
 
   document.querySelectorAll("[data-open-modal]").forEach((btn) => {
     btn.onclick = () => openModal(btn.dataset.side);
