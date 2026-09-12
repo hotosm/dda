@@ -18,6 +18,7 @@ from rasterio.transform import from_origin
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import Resampling
 from rasterio.windows import Window
+from scipy.ndimage import binary_opening
 from shapely.geometry import shape as _shape
 from shapely.ops import unary_union
 
@@ -25,8 +26,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("vantor-tool")
 
 STAC_BASE = "https://vantor-opendata.s3.amazonaws.com/events"
-CLOUD_BRIGHT_T = 175
-CLOUD_SAT_T = 25
+CLOUD_BRIGHT_T = 200
+CLOUD_SAT_T = 20
+CLOUD_OPENING_PX = 5
 
 
 HTTP_TIMEOUT_S = 60
@@ -195,16 +197,31 @@ def compute_target_grid(scenes, aoi, buffer_m=200, gsd_m=None):
     return width, height, transform, crs
 
 
-def _cloud_score(rgb):
-    m = rgb.mean(axis=0).astype(np.float32)
-    sat = (rgb.max(axis=0).astype(np.int16) - rgb.min(axis=0).astype(np.int16)).astype(np.float32)
-    return m * (1.0 - np.clip(sat / 128.0, 0, 1)) * (m > 120)
-
-
 def _is_cloud_hard(rgb):
+    """Per-pixel: bright and desaturated. Isolated hits from bright roofs are removed by
+    a morphological opening in _coherent_cloud_mask before the mask is used."""
     m = rgb.mean(axis=0)
     sat = rgb.max(axis=0).astype(np.int16) - rgb.min(axis=0).astype(np.int16)
     return (m > CLOUD_BRIGHT_T) & (sat < CLOUD_SAT_T)
+
+
+def _coherent_cloud_mask(rgb, opening_px=CLOUD_OPENING_PX):
+    """Drop single-pixel and small-blob hits; only cloud-sized clusters survive."""
+    return binary_opening(_is_cloud_hard(rgb), structure=np.ones((opening_px, opening_px), dtype=bool))
+
+
+def _read_block_with_retry(vrt, win, path, attempts=4):
+    """Transient HTTPS/GDAL tile reads occasionally fail mid-block; on failure the whole
+    block is retried after a brief backoff. On persistent failure the block is filled with
+    zeros so priority-fallback can supply pixels from another scene."""
+    for i in range(attempts):
+        try:
+            return vrt.read([1, 2, 3], window=win)
+        except (rasterio.RasterioIOError, rasterio.errors.RasterioIOError) as exc:
+            log.warning("read retry %d/%d on %s @ %s: %s", i + 1, attempts, Path(path).name, win, exc)
+            time.sleep(0.5 * (i + 1))
+    log.warning("read failed permanently on %s @ %s; block filled with zeros", Path(path).name, win)
+    return np.zeros((3, int(win.height), int(win.width)), dtype=np.uint8)
 
 
 def _valid(rgb):
@@ -271,21 +288,26 @@ def build_composite(  # noqa: PLR0915  # single macroblock loop with closures; s
         h = min(block_px, height - row)
         win = Window(col, row, w, h)  # ty: ignore[too-many-positional-arguments]
         vrts = get_vrts()
-        reads = [v.read([1, 2, 3], window=win) for v in vrts]
+        reads = [_read_block_with_retry(v, win, paths[i]) for i, v in enumerate(vrts)]
         stack = np.stack(reads, axis=0)
         valid = np.stack([_valid(r) for r in reads])
-        scores = np.where(valid, np.stack([_cloud_score(r) for r in reads]), np.inf)
-        best = scores.argmin(axis=0)
+        cloud = np.stack([_coherent_cloud_mask(r) for r in reads])
         any_valid = valid.any(axis=0)
-        hard = np.stack([_is_cloud_hard(r) for r in reads])
-        all_cloud = (hard | ~valid).all(axis=0) & any_valid
-        rgb = np.zeros((3, h, w), dtype=np.uint8)
+        all_cloud = (cloud | ~valid).all(axis=0) & any_valid
+        # Scenes are pre-sorted by eo:cloud_cover ascending. Assign each pixel to the first
+        # valid non-cloudy scene; fall back to the first valid scene where none are clean.
         src_map = np.full((h, w), 255, dtype=np.uint8)
         for si in range(len(reads)):
-            m = (best == si) & any_valid
+            pick = (src_map == 255) & valid[si] & ~cloud[si]
+            src_map[pick] = si
+        for si in range(len(reads)):
+            pick = (src_map == 255) & valid[si]
+            src_map[pick] = si
+        rgb = np.zeros((3, h, w), dtype=np.uint8)
+        for si in range(len(reads)):
+            m = src_map == si
             for b in range(3):
                 rgb[b][m] = stack[si, b][m]
-            src_map[m] = si
         return bx, by, win, rgb, src_map, all_cloud.astype(np.uint8)
 
     n_bx = (width + block_px - 1) // block_px

@@ -1,0 +1,57 @@
+ARG PYTHON_VERSION=3.13-bookworm-slim
+
+FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION} AS builder
+
+ENV UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_NO_INSTALLER_METADATA=1 \
+    UV_PYTHON_DOWNLOADS=never
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+RUN sed -i 's/pytorch-cu118/pytorch-cpu/g; s#whl/cu118#whl/cpu#' pyproject.toml
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --no-install-project --no-dev
+
+COPY src ./src
+COPY conf ./conf
+COPY README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --no-dev
+
+
+FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /app/.venv /app/.venv
+COPY --from=builder /app/src /app/src
+COPY --from=builder /app/conf /app/conf
+COPY --from=builder /app/pyproject.toml /app/pyproject.toml
+
+RUN git clone --depth 1 https://github.com/facebookresearch/dinov3.git \
+        /root/.cache/torch/hub/facebookresearch_dinov3_main \
+    && rm -rf /root/.cache/torch/hub/facebookresearch_dinov3_main/.git
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HOME=/data/hf-cache \
+    XDG_CACHE_HOME=/data/cache \
+    TORCH_HOME=/data/cache/torch \
+    PORT=8080 \
+    DDA_DEVICE=cpu \
+    DDA_DAMAGE_CKPT="kshitijrajsharma/dinov3-damage-assessment:nepal_flood_ft.ckpt"
+
+VOLUME ["/data"]
+EXPOSE 8080
+
+ENTRYPOINT ["dda"]
+CMD ["serve"]

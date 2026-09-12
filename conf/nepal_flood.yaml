@@ -8,7 +8,7 @@ aoi: aoi_nepal_flood.geojson
 tm_aoi_project: null
 
 pre_img: https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
-post_img: outputs/nepal_flood_upperstream/vantor/composite_v6/post_composite.tif
+post_img: outputs/nepal_flood_upperstream/vantor/composite_v7/post_composite.tif
 zoom: 18
 photometric_calibration: true
 stretch_percentiles: true

@@ -56,6 +56,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cal.add_argument("--ckpt", default=None)
     _common(p_cal)
 
+    sub.add_parser("serve", help="Run the damage inference HTTP server (POST /predict)")
+
     _add_pipeline_parsers(sub)
     return parser
 
@@ -248,6 +250,11 @@ def app() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
+    if args.command == "serve":
+        from dda.serve import main as serve_main
+
+        serve_main()
+        return 0
     if args.command in {"train", "predict", "export", "evaluate", "calibrate"}:
         return _run_dev(args)
     return _run_pipeline(args)
