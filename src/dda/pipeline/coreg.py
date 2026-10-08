@@ -127,6 +127,8 @@ def _reproject_pre_to_post_grid(pre_raw: Path, post_aligned: Path, out: Path) ->
     with rasterio.open(post_aligned) as ps:
         target_geobox = GeoBox.from_rio(ps)
     src = rioxarray.open_rasterio(pre_raw, chunks={"x": 2048, "y": 2048}, band_as_variable=False)
+    if not isinstance(src, xr.DataArray):
+        raise TypeError(f"expected a single raster band stack from {pre_raw}, got {type(src).__name__}")
     reprojected = xr_reproject(src, target_geobox, resampling="bilinear", dst_nodata=0)
     reprojected = reprojected.astype("uint8")
     reprojected.rio.to_raster(

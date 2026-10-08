@@ -2,6 +2,7 @@ import functools
 import logging
 import os
 from pathlib import Path
+from typing import cast
 
 import geopandas as gpd
 import numpy as np
@@ -46,7 +47,8 @@ def load_model(ckpt_path: str | Path, cfg, device: str = "cuda") -> DinoV3Damage
     if INFER_COMPILE and device.startswith("cuda"):
         # `reduce-overhead` uses CUDA Graphs; pair with padded fixed-size batches in
         # sliding_window_prob or the graph recompiles on any shape drift.
-        model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
+        # The compiled wrapper forwards attribute access to the module it wraps.
+        model = cast(DinoV3DamageLit, torch.compile(model, mode="reduce-overhead", fullgraph=False))
         log.info("torch.compile: reduce-overhead")
     return model
 
@@ -178,7 +180,7 @@ def sliding_window_prob(
         batch_coords: list[tuple[int, int]] = []
         for r, c in coords:
             batch_post.append(_pad(post[r : r + window, c : c + window, :], window))
-            if batch_pre is not None:
+            if pre is not None and batch_pre is not None:
                 batch_pre.append(_pad(pre[r : r + window, c : c + window, :], window))
             batch_coords.append((r, c))
             if len(batch_coords) >= INFER_BATCH_SIZE:
