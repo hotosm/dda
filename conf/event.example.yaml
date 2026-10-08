@@ -11,14 +11,9 @@ tm_aoi_project: null
 pre_img:  https://oin-hotosm-temp.s3.us-east-1.amazonaws.com/6a7cb2bef7b084f6608726ad/0/6a7cb2bef7b084f6608726ae.tif
 post_img: https://oin-hotosm-temp.s3.us-east-1.amazonaws.com/6a7cb280f7b084f660872669/0/6a7cb280f7b084f66087266a.tif
 zoom: 19
-photometric_calibration: true
-stretch_percentiles: true
 keep_raw: false
 # Identity homography instead of SIFT, for cross-source pairs where SIFT drops below the inlier threshold.
 skip_drift: false
-# Post-stretch tone curves; values <1 lift midtones, >1 dampen. null disables.
-pre_gamma: null
-post_gamma: null
 
 buildings:
   source: fair                        # fair | osm | input

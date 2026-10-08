@@ -76,12 +76,7 @@ def _stage_prepare(cfg: DictConfig, paths: PipelinePaths) -> None:
         paths.post_aligned,
         paths.drift_json,
         paths.coreg_check_png,
-        calibrate_photometry=cfg.photometric_calibration,
-        stretch_percentiles=cfg.stretch_percentiles,
         keep_raw=cfg.keep_raw,
-        shift_direction=cfg.shift_direction,
-        pre_gamma=cfg.pre_gamma,
-        post_gamma=cfg.post_gamma,
         skip_drift=cfg.skip_drift,
     )
 

@@ -14,7 +14,7 @@ from rasterio.merge import merge
 
 from dda.config import load_config
 from dda.infer import _coregister, load_model, radiometric_normalize, resolve_ckpt, sliding_window_prob
-from dda.pool import assign_damage
+from dda.pool import assign_damage, filter_by_confidence, parse_confidence_threshold
 
 log = logging.getLogger(__name__)
 
@@ -93,7 +93,9 @@ def _fetch_osm_buildings(bbox: list[float], out_dir: str) -> str:
     return str(result)
 
 
-def _predict(image_uri: str, pre_image_uri: str, bbox: list[float], zoom: int) -> dict:
+def _predict(
+    image_uri: str, pre_image_uri: str, bbox: list[float], zoom: int, confidence_threshold: float
+) -> dict:
     with tempfile.TemporaryDirectory(prefix="dda-serve-") as tmp:
         post_raster = _download_raster(image_uri, bbox, zoom, tmp, "post")
         pre_raster = _download_raster(pre_image_uri, bbox, zoom, tmp, "pre")
@@ -116,6 +118,7 @@ def _predict(image_uri: str, pre_image_uri: str, bbox: list[float], zoom: int) -
         gdf = assign_damage(
             prob, transform, crs, buildings, pool_op=CFG.pool_op, percentile=CFG.pool_percentile
         )
+        gdf = filter_by_confidence(gdf, confidence_threshold)
         keep = ["geometry", "damage", "damage_class", "damage_confidence"]
         keep += [c for c in ("osm_id", "id") if c in gdf.columns]
         return json.loads(gdf[keep].to_crs(4326).to_json())
@@ -156,7 +159,12 @@ class Handler(BaseHTTPRequestHandler):
         zoom = int(payload["zoom"])
         params = payload.get("params") or {}
         pre_image_uri = params.get("pre_image_uri") or DEFAULT_PRE_IMAGE_URI
-        result = _predict(image_uri, pre_image_uri, bbox, zoom)
+        try:
+            confidence_threshold = parse_confidence_threshold(params.get("confidence_threshold", 0.0))
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)})
+            return
+        result = _predict(image_uri, pre_image_uri, bbox, zoom, confidence_threshold)
         self._json(200, result)
 
 

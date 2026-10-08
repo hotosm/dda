@@ -1,4 +1,6 @@
+import functools
 import logging
+import os
 from pathlib import Path
 
 import geopandas as gpd
@@ -18,6 +20,8 @@ from dda.pool import assign_damage
 log = logging.getLogger(__name__)
 
 DAMAGE_CKPT_SHA256 = "87485943ee286973168314a31ab62c0618e60d9b13d2ae7942dc82a4cee3eab7"
+INFER_BATCH_SIZE = int(os.environ.get("DDA_INFER_BATCH", "16"))
+INFER_COMPILE = os.environ.get("DDA_INFER_COMPILE", "1") != "0"
 
 
 def resolve_ckpt(cfg, ckpt_path: str | Path | None = None) -> str:
@@ -39,20 +43,33 @@ def load_model(ckpt_path: str | Path, cfg, device: str = "cuda") -> DinoV3Damage
         str(ckpt_path), map_location=device, ckpt_path=encoder_ckpt, weights_only=False
     )
     model.eval()
+    if INFER_COMPILE and device.startswith("cuda"):
+        # `reduce-overhead` uses CUDA Graphs; pair with padded fixed-size batches in
+        # sliding_window_prob or the graph recompiles on any shape drift.
+        model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
+        log.info("torch.compile: reduce-overhead")
     return model
 
 
+@functools.cache
 def _gaussian_kernel(size: int, sigma_frac: float = 0.125) -> np.ndarray:
     w = gauss1d(size, std=sigma_frac * size)
     k = np.outer(w, w)
     return k / k.max()
 
 
-def _normalize(tile_uint8: np.ndarray, device: str) -> torch.Tensor:
-    t = torch.from_numpy(tile_uint8.astype(np.float32) / 255.0).permute(2, 0, 1)
-    mean = torch.tensor(DINOV3_MEAN, dtype=torch.float32).view(3, 1, 1)
-    std = torch.tensor(DINOV3_STD, dtype=torch.float32).view(3, 1, 1)
-    return ((t - mean) / std).unsqueeze(0).to(device)
+@functools.cache
+def _mean_std(device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    mean = torch.tensor(DINOV3_MEAN, dtype=torch.float32, device=device).view(1, 3, 1, 1)
+    std = torch.tensor(DINOV3_STD, dtype=torch.float32, device=device).view(1, 3, 1, 1)
+    return mean, std
+
+
+def _batch_normalize(tiles_uint8: np.ndarray, device: str) -> torch.Tensor:
+    """(B, H, W, 3) uint8 -> (B, 3, H, W) float32 normalised, on device."""
+    t = torch.from_numpy(tiles_uint8).to(device).permute(0, 3, 1, 2).float().div_(255.0)
+    mean, std = _mean_std(device)
+    return (t - mean) / std
 
 
 def radiometric_normalize(
@@ -111,7 +128,8 @@ def sliding_window_prob(
     temperature: float,
     device: str,
 ) -> np.ndarray:
-    """Gaussian-blended per-class damage probabilities, shape (C, H, W)."""
+    """Gaussian-blended per-class damage probabilities, shape (C, H, W). Tiles are batched
+    to `INFER_BATCH_SIZE` per forward pass, and the forward runs under fp16 autocast on CUDA."""
     height, width = post.shape[:2]
     prob_acc = np.zeros((N_DAMAGE_CLASSES, height, width), dtype=np.float32)
     weight_acc = np.zeros((height, width), dtype=np.float32)
@@ -124,20 +142,52 @@ def sliding_window_prob(
     if cols[-1] + window < width:
         cols.append(width - window)
 
-    with torch.inference_mode():
-        for r in rows:
-            for c in cols:
-                post_tile = _pad(post[r : r + window, c : c + window, :], window)
-                x_post = _normalize(post_tile, device)
-                x_pre = None
-                if pre is not None:
-                    x_pre = _normalize(_pad(pre[r : r + window, c : c + window, :], window), device)
+    coords = [(r, c) for r in rows for c in cols]
+    on_cuda = device.startswith("cuda")
+    zero_tile = np.zeros((window, window, 3), dtype=np.uint8)
+
+    def flush(
+        batch_post: list[np.ndarray],
+        batch_pre: list[np.ndarray] | None,
+        batch_coords: list[tuple[int, int]],
+    ) -> None:
+        # Pad to INFER_BATCH_SIZE so torch.compile's CUDA-Graphs mode never re-records.
+        n_real = len(batch_coords)
+        while len(batch_post) < INFER_BATCH_SIZE:
+            batch_post.append(zero_tile)
+            if batch_pre is not None:
+                batch_pre.append(zero_tile)
+        x_post = _batch_normalize(np.stack(batch_post, axis=0), device)
+        x_pre = _batch_normalize(np.stack(batch_pre, axis=0), device) if batch_pre is not None else None
+        if on_cuda:
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
                 _, dmg_logits = model(x_post, x_pre)
-                probs = torch.softmax(dmg_logits[0] / temperature, dim=0).cpu().numpy()
-                h = min(window, height - r)
-                w = min(window, width - c)
-                prob_acc[:, r : r + h, c : c + w] += probs[:, :h, :w] * kernel[:h, :w]
-                weight_acc[r : r + h, c : c + w] += kernel[:h, :w]
+        else:
+            _, dmg_logits = model(x_post, x_pre)
+        probs = torch.softmax(dmg_logits.float() / temperature, dim=1).cpu().numpy()
+        for i in range(n_real):
+            r, c = batch_coords[i]
+            h = min(window, height - r)
+            w = min(window, width - c)
+            prob_acc[:, r : r + h, c : c + w] += probs[i, :, :h, :w] * kernel[:h, :w]
+            weight_acc[r : r + h, c : c + w] += kernel[:h, :w]
+
+    with torch.inference_mode():
+        batch_post: list[np.ndarray] = []
+        batch_pre: list[np.ndarray] | None = [] if pre is not None else None
+        batch_coords: list[tuple[int, int]] = []
+        for r, c in coords:
+            batch_post.append(_pad(post[r : r + window, c : c + window, :], window))
+            if batch_pre is not None:
+                batch_pre.append(_pad(pre[r : r + window, c : c + window, :], window))
+            batch_coords.append((r, c))
+            if len(batch_coords) >= INFER_BATCH_SIZE:
+                flush(batch_post, batch_pre, batch_coords)
+                batch_post, batch_coords = [], []
+                if batch_pre is not None:
+                    batch_pre = []
+        if batch_coords:
+            flush(batch_post, batch_pre, batch_coords)
 
     weight_acc = np.maximum(weight_acc, 1e-6)
     return prob_acc / weight_acc

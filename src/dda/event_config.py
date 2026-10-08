@@ -50,10 +50,7 @@ class EventConfig:
     pre_img: str = MISSING
     post_img: str = MISSING
     zoom: int = 19
-    photometric_calibration: bool = True
-    stretch_percentiles: bool = True
     keep_raw: bool = False
-    shift_direction: str = "pre_to_post"
     buildings: BuildingsConfig = field(default_factory=BuildingsConfig)
     damage: DamageConfig = field(default_factory=DamageConfig)
     publish: PublishConfig = field(default_factory=PublishConfig)
@@ -92,8 +89,6 @@ class EventConfig:
     damage_provenance_damage_model: str = ""
     damage_palette: dict[str, str] = field(default_factory=dict)
 
-    pre_gamma: float | None = None
-    post_gamma: float | None = None
     skip_drift: bool = False
 
 

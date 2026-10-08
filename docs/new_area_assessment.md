@@ -42,7 +42,8 @@ Common HOT sources:
 | Bing | permissive commercial-license pre-imagery | pass hostname; see `--pre-img` help |
 
 Pick the same-sensor pair when possible. When same-sensor pre is not available, use ESRI as
-the pre; the pipeline coregisters and photometric-calibrates it against the post grid.
+the pre; the pipeline reprojects it onto the post grid and measures any residual drift.
+Dynamic-range normalisation happens at damage time per scene, not at coreg time.
 
 ### 3. Write the event config
 
@@ -58,9 +59,8 @@ tm_aoi_project: null
 pre_img:  https://oin-hotosm-temp.s3.us-east-1.amazonaws.com/6a7cb2bef7b084f6608726ad/0/6a7cb2bef7b084f6608726ae.tif
 post_img: https://oin-hotosm-temp.s3.us-east-1.amazonaws.com/6a7cb280f7b084f660872669/0/6a7cb280f7b084f66087266a.tif
 zoom: 19                           # ignored when source is a COG
-photometric_calibration: true
-stretch_percentiles: true
 keep_raw: false                    # true to keep raw pre.tif + post.tif for QGIS inspection
+skip_drift: false                  # true when SIFT can't measure drift (cross-sensor pairs)
 
 buildings:
   source: fair                     # fair | osm | input
@@ -132,11 +132,11 @@ buildings:
   input: my_footprints.geojson     # your own polygons
 ```
 
-**Photometric calibration.** On by default. Set `photometric_calibration: false` when pre and
-post already share a sensor and radiometry matches.
-
 **Keep raw imagery.** `keep_raw: true` preserves the raw `pre.tif` and `post.tif` alongside
 the aligned versions for QGIS inspection; default deletes them once the aligned files land.
+
+**Skip drift.** `skip_drift: true` uses an identity homography instead of running SIFT,
+for cross-sensor pairs where SIFT falls below the inlier threshold.
 
 ### 6. Label in region (external)
 
@@ -205,8 +205,8 @@ Prints per-class precision, recall, F1, and the confusion matrix.
 | --- | --- | --- |
 | `outputs/<area>/aoi.geojson` | aoi | copied from `aoi:` or fetched from `tm_aoi_project:` |
 | `outputs/<area>/pre.tif`, `post.tif` | prepare | deleted after coregistration unless `keep_raw: true` |
-| `outputs/<area>/pre_aligned.tif` | prepare | pre reprojected onto post grid, drift-corrected, photometric-calibrated, per-scene stretched |
-| `outputs/<area>/post_aligned.tif` | prepare | post copy with the same per-scene stretch applied |
+| `outputs/<area>/pre_aligned.tif` | prepare | pre reprojected onto post grid, drift-corrected, single-pass COG |
+| `outputs/<area>/post_aligned.tif` | prepare | post copied through GDAL's COG driver |
 | `outputs/<area>/coreg/drift.json`, `checkerboard.png` | prepare | drift record and visual alignment check |
 | `outputs/<area>/fs_buildings/` | fewshot | HPO trials, best checkpoint, training log |
 | `outputs/<area>/buildings.geojson` | buildings | building footprints |

@@ -3,7 +3,7 @@
 Two command groups:
 
 Per-area pipeline (the slim disaster-assessment path):
-  prepare              fetch pre + post rasters, coreg + photometric calibration
+  prepare              fetch pre + post rasters, coreg
   buildings            detect footprints (fAIr) OR pull from OSM (--source osm) OR use your own (--input)
   damage               score each building; writes damage.geojson
   eval                 per-class F1 / confusion matrix vs a labelled ground-truth GeoJSON
@@ -63,7 +63,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_pipeline_parsers(sub) -> None:  # single dispatch table; splitting hurts readability
-    p_prep = sub.add_parser("prepare", help="Fetch pre + post rasters, coreg + photometric calibration")
+    p_prep = sub.add_parser("prepare", help="Fetch pre + post rasters, coreg")
     p_prep.add_argument("--area", required=True)
     p_prep.add_argument("--aoi", required=True)
     p_prep.add_argument(
@@ -79,19 +79,14 @@ def _add_pipeline_parsers(sub) -> None:  # single dispatch table; splitting hurt
     p_prep.add_argument("--zoom", type=int, default=19, help="TMS zoom level; ignored for COGs")
     p_prep.add_argument("--outputs-root", default="outputs")
     p_prep.add_argument(
-        "--no-photometric-calibration",
-        action="store_true",
-        help="Skip the per-band mean/std match at coreg time (default: on)",
-    )
-    p_prep.add_argument(
-        "--no-stretch",
-        action="store_true",
-        help="Skip the 2-98 percentile stretch on pre_aligned + post (default: on)",
-    )
-    p_prep.add_argument(
         "--keep-raw",
         action="store_true",
         help="Keep raw pre.tif + post.tif after prepare (default: deleted to save disk)",
+    )
+    p_prep.add_argument(
+        "--skip-drift",
+        action="store_true",
+        help="Skip SIFT drift measurement; use identity transform (cross-sensor pairs)",
     )
 
     p_bld = sub.add_parser(
@@ -345,9 +340,8 @@ def _run_prepare(args, paths) -> int:
         paths.post_aligned,
         paths.drift_json,
         paths.coreg_check_png,
-        calibrate_photometry=not args.no_photometric_calibration,
-        stretch_percentiles=not args.no_stretch,
         keep_raw=args.keep_raw,
+        skip_drift=args.skip_drift,
     )
     return 0
 

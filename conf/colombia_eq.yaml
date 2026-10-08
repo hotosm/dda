@@ -11,8 +11,6 @@ tm_aoi_project: null
 pre_img: https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
 post_img: https://oin-hotosm-temp.s3.us-east-1.amazonaws.com/6a7ec803da08cdce40344eeb/0/6a7ec803da08cdce40344eec.tif
 zoom: 19
-photometric_calibration: true
-stretch_percentiles: true
 keep_raw: true
 
 buildings:

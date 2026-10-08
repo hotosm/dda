@@ -72,3 +72,19 @@ def assign_damage(
     out["damage_confidence"] = confs
     log.info("Assigned damage to %d buildings", len(out))
     return out
+
+
+def parse_confidence_threshold(value: object) -> float:
+    """Raise ValueError unless value is a number in [0, 1]."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"confidence_threshold must be a number, got {value!r}")
+    threshold = float(value)
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError(f"confidence_threshold must be within [0, 1], got {threshold}")
+    return threshold
+
+
+def filter_by_confidence(buildings: gpd.GeoDataFrame, threshold: float) -> gpd.GeoDataFrame:
+    """No-data buildings (NaN confidence) are kept."""
+    confidence = buildings["damage_confidence"]
+    return buildings[confidence.isna() | (confidence >= threshold)]
