@@ -13,7 +13,7 @@ import rasterio
 from rasterio.merge import merge
 
 from dda.config import load_config
-from dda.infer import _coregister, load_model, radiometric_normalize, resolve_ckpt, sliding_window_prob
+from dda.infer import load_model, read_aligned_pair, resolve_ckpt, sliding_window_prob
 from dda.pool import assign_damage, filter_by_confidence, parse_confidence_threshold
 
 log = logging.getLogger(__name__)
@@ -100,16 +100,7 @@ def _predict(
         post_raster = _download_raster(image_uri, bbox, zoom, tmp, "post")
         pre_raster = _download_raster(pre_image_uri, bbox, zoom, tmp, "pre")
         buildings_geojson = _fetch_osm_buildings(bbox, tmp)
-
-        with rasterio.open(post_raster) as src:
-            post = src.read([1, 2, 3]).transpose(1, 2, 0).astype("uint8")
-            transform, crs = src.transform, src.crs
-        with rasterio.open(pre_raster) as src:
-            pre = _coregister(src, post.shape[:2], transform, crs)
-
-        if CFG.radiometric_normalize:
-            post = radiometric_normalize(post)
-            pre = radiometric_normalize(pre)
+        post, pre, transform, crs = read_aligned_pair(CFG, post_raster, pre_raster)
 
         prob = sliding_window_prob(
             MODEL, post, pre, CFG.tile_window, CFG.tile_stride, CFG.temperature, DEVICE

@@ -6,11 +6,13 @@ from typing import cast
 
 import geopandas as gpd
 import numpy as np
+import onnxruntime as ort
 import rasterio
 import torch
 from huggingface_hub import hf_hub_download
 from rasterio.warp import Resampling, reproject
 from scipy.signal.windows import gaussian as gauss1d
+from scipy.special import softmax
 
 from dda.config import N_DAMAGE_CLASSES
 from dda.data import DINOV3_MEAN, DINOV3_STD
@@ -121,6 +123,17 @@ def _pad(tile: np.ndarray, window: int) -> np.ndarray:
     return pad
 
 
+def _window_origins(height: int, width: int, window: int, stride: int) -> list[tuple[int, int]]:
+    """Top-left corners of the sliding windows; the last row and column are pinned to the image edge."""
+    rows = list(range(0, max(1, height - window + 1), stride))
+    cols = list(range(0, max(1, width - window + 1), stride))
+    if rows[-1] + window < height:
+        rows.append(height - window)
+    if cols[-1] + window < width:
+        cols.append(width - window)
+    return [(r, c) for r in rows for c in cols]
+
+
 def sliding_window_prob(
     model: DinoV3DamageLit,
     post: np.ndarray,
@@ -137,14 +150,7 @@ def sliding_window_prob(
     weight_acc = np.zeros((height, width), dtype=np.float32)
     kernel = _gaussian_kernel(window)
 
-    rows = list(range(0, max(1, height - window + 1), stride))
-    cols = list(range(0, max(1, width - window + 1), stride))
-    if rows[-1] + window < height:
-        rows.append(height - window)
-    if cols[-1] + window < width:
-        cols.append(width - window)
-
-    coords = [(r, c) for r in rows for c in cols]
+    coords = _window_origins(height, width, window, stride)
     on_cuda = device.startswith("cuda")
     zero_tile = np.zeros((window, window, 3), dtype=np.uint8)
 
@@ -191,22 +197,47 @@ def sliding_window_prob(
         if batch_coords:
             flush(batch_post, batch_pre, batch_coords)
 
-    weight_acc = np.maximum(weight_acc, 1e-6)
     return prob_acc / weight_acc
 
 
-def predict_damage(
-    cfg,
-    ckpt_path: str | Path,
-    post_raster: str | Path,
-    buildings_geojson: str | Path,
-    out_geojson: str | Path,
-    pre_raster: str | Path | None = None,
-    device: str | None = None,
-) -> Path:
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    model = load_model(ckpt_path, cfg, device=device)
+def sliding_window_prob_onnx(
+    session: ort.InferenceSession,
+    post: np.ndarray,
+    pre: np.ndarray,
+    window: int,
+    stride: int,
+    temperature: float,
+) -> np.ndarray:
+    """`sliding_window_prob` for the ONNX export of `dda.export.export_onnx`, one window per run."""
+    height, width = post.shape[:2]
+    prob_acc = np.zeros((N_DAMAGE_CLASSES, height, width), dtype=np.float32)
+    weight_acc = np.zeros((height, width), dtype=np.float32)
+    kernel = _gaussian_kernel(window)
+    mean = np.asarray(DINOV3_MEAN, dtype=np.float32).reshape(1, 3, 1, 1)
+    std = np.asarray(DINOV3_STD, dtype=np.float32).reshape(1, 3, 1, 1)
 
+    def normalize(tile: np.ndarray) -> np.ndarray:
+        chw = _pad(tile, window).transpose(2, 0, 1)[np.newaxis].astype(np.float32) / 255.0
+        return (chw - mean) / std
+
+    for r, c in _window_origins(height, width, window, stride):
+        inputs = {
+            "post": normalize(post[r : r + window, c : c + window, :]),
+            "pre": normalize(pre[r : r + window, c : c + window, :]),
+        }
+        logits = np.asarray(session.run(["damage_logits"], inputs)[0])
+        probs = softmax(logits[0] / temperature, axis=0)
+        h = min(window, height - r)
+        w = min(window, width - c)
+        prob_acc[:, r : r + h, c : c + w] += probs[:, :h, :w] * kernel[:h, :w]
+        weight_acc[r : r + h, c : c + w] += kernel[:h, :w]
+    return prob_acc / weight_acc
+
+
+def read_aligned_pair(
+    cfg, post_raster: str | Path, pre_raster: str | Path | None
+) -> tuple[np.ndarray, np.ndarray | None, rasterio.Affine, rasterio.crs.CRS]:
+    """Post and pre RGB as HxWx3 uint8 on the post grid, stretched when `cfg.radiometric_normalize`."""
     with rasterio.open(post_raster) as src:
         post = src.read([1, 2, 3]).transpose(1, 2, 0).astype(np.uint8)
         transform, crs = src.transform, src.crs
@@ -220,6 +251,35 @@ def predict_damage(
         post = radiometric_normalize(post)
         if pre is not None:
             pre = radiometric_normalize(pre)
+    return post, pre, transform, crs
+
+
+def predict_damage_onnx(
+    session: ort.InferenceSession,
+    post_raster: str | Path,
+    pre_raster: str | Path,
+    buildings: gpd.GeoDataFrame,
+    cfg,
+) -> gpd.GeoDataFrame:
+    """Damage class and confidence for each building from the ONNX export of `dda.export.export_onnx`."""
+    post, pre, transform, crs = read_aligned_pair(cfg, post_raster, pre_raster)
+    assert pre is not None
+    prob = sliding_window_prob_onnx(session, post, pre, cfg.tile_window, cfg.tile_stride, cfg.temperature)
+    return assign_damage(prob, transform, crs, buildings, pool_op=cfg.pool_op, percentile=cfg.pool_percentile)
+
+
+def predict_damage(
+    cfg,
+    ckpt_path: str | Path,
+    post_raster: str | Path,
+    buildings_geojson: str | Path,
+    out_geojson: str | Path,
+    pre_raster: str | Path | None = None,
+    device: str | None = None,
+) -> Path:
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    model = load_model(ckpt_path, cfg, device=device)
+    post, pre, transform, crs = read_aligned_pair(cfg, post_raster, pre_raster)
 
     prob = sliding_window_prob(model, post, pre, cfg.tile_window, cfg.tile_stride, cfg.temperature, device)
 

@@ -83,7 +83,14 @@ Model adaptation:
 | `dda fewshot damage` | fine-tune the damage model on one area (strict head-only by default) |
 
 Training and dev-time (`dda train`, `dda predict`, `dda export`, `dda evaluate`, `dda calibrate`)
-are documented in the per-command `--help`.
+are documented in the per-command `--help`. `dda export` writes an ONNX model with `post` and
+`pre` inputs and a `damage_logits` output, and `dda.infer.predict_damage_onnx` runs it with
+onnxruntime and assigns a damage class to each building.
+
+For fAIr datasets of `OAM-{x}-{y}-{z}.tif` chips, `dda.pipeline.chip_windows` builds training
+windows from post and pre chips and prepares the inference inputs (post mosaic, pre image,
+footprints). `fit_damage_windows` and `evaluate_damage_windows` in
+`dda.pipeline.fewshot_damage` fine-tune and score the model on those windows.
 
 ### Data
 

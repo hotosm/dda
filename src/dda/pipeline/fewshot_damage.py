@@ -76,7 +76,7 @@ class FewshotDamageResult:
         }
 
 
-def _normalize_damage_value(v: Any) -> int:
+def normalize_damage_value(v: Any) -> int:
     """GeoPandas stringifies mixed-type columns, so numeric strings decode to int first."""
     if isinstance(v, str):
         s = v.strip().lower()
@@ -104,7 +104,7 @@ def _read_labels(labels_geojson: Path) -> list[tuple[Any, int]]:
             f"labels {labels_geojson} must have a `damage` column with values in "
             f"{{1,2,3,4}} or string names (no-damage/minor-damage/major-damage/destroyed)."
         )
-    return [(row.geometry, _normalize_damage_value(row.damage)) for row in gdf.itertuples()]
+    return [(row.geometry, normalize_damage_value(row.damage)) for row in gdf.itertuples()]
 
 
 def _chip_area(
@@ -192,15 +192,15 @@ class _ChipDataset(Dataset):
         return {"post": post_t, "pre": pre_t, "damage": damage, "build_mask": build_mask}
 
 
-def _split_datasets(
+def _split_windows(
     chips: list[dict[str, Any]], val_frac: float, seed: int
-) -> tuple[_ChipDataset, _ChipDataset]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rng = np.random.default_rng(seed)
     perm = rng.permutation(len(chips))
     n_val = max(1, int(len(chips) * val_frac))
     val_items = [chips[i] for i in perm[:n_val]]
     train_items = [chips[i] for i in perm[n_val:]]
-    return _ChipDataset(train_items), _ChipDataset(val_items)
+    return train_items, val_items
 
 
 def _apply_strict_head_freeze(model: DinoV3DamageLit) -> tuple[int, int]:
@@ -215,6 +215,36 @@ def _apply_strict_head_freeze(model: DinoV3DamageLit) -> tuple[int, int]:
     n_trainable = sum(p.numel() for p in net.parameters() if p.requires_grad)
     n_frozen = sum(p.numel() for p in net.parameters() if not p.requires_grad)
     return n_trainable, n_frozen
+
+
+def _load_damage_model(cfg, ckpt: Path | None) -> DinoV3DamageLit:
+    """The damage model from `ckpt`, or the pinned pretrained checkpoint, with its frozen encoder."""
+    enable_offline_torch_hub_fallback()
+    encoder_ckpt = hf_hub_download(repo_id=cfg.hf_ckpt_repo, filename=cfg.hf_ckpt_file)
+    pretrained_ckpt = str(ckpt) if ckpt else resolve_ckpt(cfg, None)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    return DinoV3DamageLit.load_from_checkpoint(
+        pretrained_ckpt, map_location=device, ckpt_path=encoder_ckpt, weights_only=False
+    )
+
+
+def evaluate_damage_windows(
+    windows: list[dict[str, Any]], ckpt: Path | None = None, batch_size: int = 2
+) -> dict[str, float]:
+    """Damage macro F1, harmonic damage F1 and localization IoU of `ckpt` on `windows`."""
+    model = _load_damage_model(load_config(None), ckpt)
+    loader = DataLoader(_ChipDataset(windows), batch_size=min(batch_size, len(windows)), num_workers=0)
+    trainer = pl.Trainer(
+        accelerator="auto",
+        devices=1,
+        logger=False,
+        enable_checkpointing=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        inference_mode=False,
+    )
+    metrics = trainer.validate(model, dataloaders=loader, verbose=False)[0]
+    return {name: float(metrics[f"val/{name}"]) for name in ("dmg_macro_f1", "dmg_f1", "loc_iou")}
 
 
 def fit_damage(
@@ -260,8 +290,40 @@ def fit_damage(
             len(chips),
         )
 
-    train_ds, val_ds = _split_datasets(chips, val_frac=val_frac, seed=seed)
-    log.info("fewshot damage: split %d train / %d val", len(train_ds), len(val_ds))
+    train_windows, val_windows = _split_windows(chips, val_frac=val_frac, seed=seed)
+    log.info("fewshot damage: split %d train / %d val", len(train_windows), len(val_windows))
+    return fit_damage_windows(
+        train_windows,
+        val_windows,
+        out_dir,
+        ckpt=ckpt,
+        epochs=epochs,
+        lr=lr,
+        patience=patience,
+        batch_size=batch_size,
+        strict_head=strict_head,
+        seed=seed,
+    )
+
+
+def fit_damage_windows(
+    train_windows: list[dict[str, Any]],
+    val_windows: list[dict[str, Any]],
+    out_dir: Path,
+    ckpt: Path | None = None,
+    epochs: int = 10,
+    lr: float = 1e-4,
+    patience: int = 3,
+    batch_size: int = 2,
+    strict_head: bool = True,
+    seed: int = 42,
+) -> FewshotDamageResult:
+    """Fit on caller-split windows: `post` and `pre` are (3, H, W) uint8, `damage` is (H, W) uint8
+    with 0 for background and xBD codes 1..4 inside buildings."""
+    out_dir = Path(out_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pl.seed_everything(seed, workers=True)
+    train_ds, val_ds = _ChipDataset(train_windows), _ChipDataset(val_windows)
     if len(train_ds) < 2 or len(val_ds) < 2:
         raise RuntimeError(
             f"fewshot damage needs at least 2 train + 2 val chips (BatchNorm collapses on "
@@ -269,14 +331,8 @@ def fit_damage(
             "Reduce --tile-size / --stride to yield more chips, or supply more labels."
         )
 
-    enable_offline_torch_hub_fallback()
     cfg = load_config(None)
-    encoder_ckpt = hf_hub_download(repo_id=cfg.hf_ckpt_repo, filename=cfg.hf_ckpt_file)
-    pretrained_ckpt = str(ckpt) if ckpt else resolve_ckpt(cfg, None)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = DinoV3DamageLit.load_from_checkpoint(
-        pretrained_ckpt, map_location=device, ckpt_path=encoder_ckpt, weights_only=False
-    )
+    model = _load_damage_model(cfg, ckpt)
     model.lr = lr
 
     if strict_head:

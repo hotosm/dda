@@ -61,12 +61,12 @@ class TestNormalizeDamageValue:
         ],
     )
     def test_valid_values(self, value, expected):
-        assert fd._normalize_damage_value(value) == expected
+        assert fd.normalize_damage_value(value) == expected
 
     @pytest.mark.parametrize("bad", ["totalled", 0, ""])
     def test_rejects_unknown(self, bad):
         with pytest.raises((ValueError, KeyError)):
-            fd._normalize_damage_value(bad)
+            fd.normalize_damage_value(bad)
 
 
 class TestReadLabels:
@@ -239,3 +239,13 @@ def test_train_damage_fewshot_slow(tmp_path):
     )
     assert result.n_train >= 2
     assert result.best_ckpt.exists()
+
+
+def test_fit_damage_windows_rejects_a_single_validation_window(tmp_path):
+    window = {
+        "post": np.zeros((3, 32, 32), dtype=np.uint8),
+        "pre": np.zeros((3, 32, 32), dtype=np.uint8),
+        "damage": np.ones((32, 32), dtype=np.uint8),
+    }
+    with pytest.raises(RuntimeError, match="at least 2 train"):
+        fd.fit_damage_windows([window, window], [window], tmp_path)
