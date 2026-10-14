@@ -12,7 +12,7 @@ from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
 from shapely.geometry import Polygon
 
-from dda.pipeline.damage import _coverage_fraction
+from dda.pool import coverage_fraction
 
 
 def _make_half_black_raster():
@@ -34,7 +34,7 @@ def test_coverage_fraction_flags_black_side_zero_valid_side_one():
     left_bldg = _footprint(2, 30, 8, 8)  # sits at x=[2,10] which is inside colored half [0,16)
     right_bldg = _footprint(20, 30, 8, 8)  # sits at x=[20,28] which is inside black half
     gdf = gpd.GeoDataFrame({"id": [0, 1]}, geometry=[left_bldg, right_bldg], crs="EPSG:3857")
-    frac = _coverage_fraction(gdf, valid, transform)
+    frac = coverage_fraction(gdf, valid, transform)
     assert frac.shape == (2,)
     assert frac[0] == 1.0, f"colored-half footprint should be fully valid, got {frac[0]}"
     assert frac[1] == 0.0, f"black-half footprint should be zero valid, got {frac[1]}"
@@ -45,7 +45,7 @@ def test_coverage_fraction_straddling_boundary_gives_intermediate():
     valid = arr.any(axis=2)
     straddle = _footprint(12, 30, 8, 8)  # x=[12,20] straddles the 16-column boundary
     gdf = gpd.GeoDataFrame({"id": [0]}, geometry=[straddle], crs="EPSG:3857")
-    frac = _coverage_fraction(gdf, valid, transform)
+    frac = coverage_fraction(gdf, valid, transform)
     assert 0.3 < frac[0] < 0.7, f"straddling footprint should be ~0.5, got {frac[0]}"
 
 
@@ -77,3 +77,20 @@ def test_average_decimation_smears_black_edges():
     # BUT the smear failure appears when the raster is uneven. On this clean split it is fine;
     # the point of the assertion is that nearest is strictly correct and safe as the default.
     assert avg_valid[:, :2].all()
+
+
+def test_coverage_measures_each_footprint_alone_when_footprints_overlap():
+    valid = np.ones((32, 32), dtype=bool)
+    transform = from_origin(0.0, 32.0, 1.0, 1.0)
+    inner, outer = _footprint(10, 22, 6, 6), _footprint(4, 28, 20, 20)
+    gdf = gpd.GeoDataFrame(geometry=[inner, outer])
+
+    np.testing.assert_allclose(coverage_fraction(gdf, valid, transform), [1.0, 1.0])
+
+
+def test_coverage_counts_pixels_off_the_grid_as_not_imaged():
+    valid = np.ones((32, 32), dtype=bool)
+    transform = from_origin(0.0, 32.0, 1.0, 1.0)
+    half_off = gpd.GeoDataFrame(geometry=[_footprint(24, 20, 16, 4)])
+
+    np.testing.assert_allclose(coverage_fraction(half_off, valid, transform), [0.5])

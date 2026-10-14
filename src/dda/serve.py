@@ -13,8 +13,9 @@ import rasterio
 from rasterio.merge import merge
 
 from dda.config import load_config
-from dda.infer import load_model, read_aligned_pair, resolve_ckpt, sliding_window_prob
+from dda.infer import load_model, resolve_ckpt, sliding_window_prob
 from dda.pool import assign_damage, filter_by_confidence, parse_confidence_threshold
+from dda.tiling import read_aligned_pair
 
 log = logging.getLogger(__name__)
 

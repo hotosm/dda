@@ -84,8 +84,9 @@ Model adaptation:
 
 Training and dev-time (`dda train`, `dda predict`, `dda export`, `dda evaluate`, `dda calibrate`)
 are documented in the per-command `--help`. `dda export` writes an ONNX model with `post` and
-`pre` inputs and a `damage_logits` output, and `dda.infer.predict_damage_onnx` runs it with
-onnxruntime and assigns a damage class to each building.
+`pre` inputs and a `damage_logits` output, and `dda.onnx_infer.predict_damage_onnx` runs it with
+onnxruntime, assigns a damage class to each building, and marks buildings with less than 90% pre and
+post imagery as no-data. `dda.onnx_infer` and `dda.pipeline.chip_windows` import without torch.
 
 For fAIr datasets of `OAM-{x}-{y}-{z}.tif` chips, `dda.pipeline.chip_windows` builds training
 windows from post and pre chips and prepares the inference inputs (post mosaic, pre image,

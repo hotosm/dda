@@ -15,13 +15,13 @@ from rasterio.features import rasterize
 from rasterio.warp import transform_bounds
 from shapely.geometry import box, mapping
 
-from dda.infer import radiometric_normalize
+from dda.config import normalize_damage_value
 from dda.pipeline.fetch import fetch_raster
-from dda.pipeline.fewshot_damage import normalize_damage_value
 from dda.pipeline.osm_pull import pull_osm_buildings
+from dda.pool import MIN_COVERAGE_FRACTION
+from dda.tiling import radiometric_normalize
 
 CHIP_NAME = re.compile(r"OAM-(\d+)-(\d+)-(\d+)\.tif")
-OSM_BUILDING_FAMILIES = [{"key": "building", "status": "standing"}]
 
 
 def parse_chip_name(name: str) -> tuple[int, int, int]:
@@ -33,11 +33,11 @@ def parse_chip_name(name: str) -> tuple[int, int, int]:
 
 
 def windows_from_chips(
-    post_dir: Path, pre_dir: Path, labels: gpd.GeoDataFrame, chip_names: Iterable[str]
+    post_dir: Path, pre_dir: Path, labels: gpd.GeoDataFrame, chip_names: Iterable[str], cfg
 ) -> list[dict[str, Any]]:
-    """One window per 2x2 block of tiles that holds a labelled building, in the format
-    `fit_damage_windows` takes. `labels` has a `damage` column of xBD names or codes 1..4; post and
-    pre are stretched per window, as `read_aligned_pair` stretches the inference area."""
+    """One `fit_damage_windows` window per 2x2 tile block whose labels are at least `MIN_COVERAGE_FRACTION`
+    imaged in post and pre; labels off the imagery become background, and each window is stretched alone."""
+    post_dir, pre_dir = Path(post_dir), Path(pre_dir)
     blocks: dict[tuple[int, int, int], list[tuple[str, int, int]]] = defaultdict(list)
     for name in chip_names:
         x, y, z = parse_chip_name(name)
@@ -45,49 +45,54 @@ def windows_from_chips(
     codes = [normalize_damage_value(value) for value in labels["damage"]]
 
     windows = []
-    for members in (blocks[key] for key in sorted(blocks)):
-        post, pre, transform, crs = _read_block(Path(post_dir), Path(pre_dir), members)
+    for key in sorted(blocks):
+        post, pre, transform, crs = _read_block(post_dir, pre_dir, blocks[key], cfg.tile_window // 2)
         shapes = zip(labels.to_crs(crs).geometry, codes, strict=True)
         damage = rasterize(shapes, out_shape=post.shape[1:], transform=transform, fill=0, dtype="uint8")
-        if not damage.any():
+        labelled = damage > 0
+        imaged = post.any(axis=0) & pre.any(axis=0)
+        if not labelled.any() or imaged[labelled].mean() < MIN_COVERAGE_FRACTION:
             continue
-        windows.append(
-            {
-                "post": radiometric_normalize(post.transpose(1, 2, 0)).transpose(2, 0, 1),
-                "pre": radiometric_normalize(pre.transpose(1, 2, 0)).transpose(2, 0, 1),
-                "damage": damage,
-            }
-        )
+        damage[~imaged] = 0
+        if cfg.radiometric_normalize:
+            post = radiometric_normalize(post.transpose(1, 2, 0)).transpose(2, 0, 1)
+            pre = radiometric_normalize(pre.transpose(1, 2, 0)).transpose(2, 0, 1)
+        windows.append({"post": post, "pre": pre, "damage": damage})
     return windows
 
 
 def _read_block(
-    post_dir: Path, pre_dir: Path, members: list[tuple[str, int, int]]
+    post_dir: Path, pre_dir: Path, members: list[tuple[str, int, int]], chip_size: int
 ) -> tuple[np.ndarray, np.ndarray, "rasterio.Affine", Any]:
     """Post and pre RGB of a 2x2 tile block, zero where a tile is absent, on the post chips' grid."""
     first, first_col, first_row = members[0]
     with rasterio.open(post_dir / first) as src:
-        size = src.width
-        transform = src.transform * rasterio.Affine.translation(-first_col * size, -first_row * size)
+        offset = rasterio.Affine.translation(-first_col * chip_size, -first_row * chip_size)
+        transform = src.transform * offset
         crs = src.crs
-    post = np.zeros((3, 2 * size, 2 * size), dtype=np.uint8)
+    post = np.zeros((3, 2 * chip_size, 2 * chip_size), dtype=np.uint8)
     pre = np.zeros_like(post)
     for name, col, row in members:
-        cells = np.s_[:, row * size : (row + 1) * size, col * size : (col + 1) * size]
+        cells = np.s_[:, row * chip_size : (row + 1) * chip_size, col * chip_size : (col + 1) * chip_size]
         with rasterio.open(post_dir / name) as post_src, rasterio.open(pre_dir / name) as pre_src:
+            if (post_src.width, post_src.height) != (chip_size, chip_size):
+                raise ValueError(
+                    f"chip {name} is {post_src.width}x{post_src.height} px; the model window takes "
+                    f"2x2 blocks of {chip_size} px chips"
+                )
             post[cells] = post_src.read([1, 2, 3])
-            pre[cells] = pre_src.read([1, 2, 3], out_shape=(3, size, size))
+            pre[cells] = pre_src.read([1, 2, 3], out_shape=(3, chip_size, chip_size))
     return post, pre, transform, crs
 
 
 def area_inputs(
-    post_chips_dir: Path, pre_image_uri: str, buildings_uri: str | None, work_dir: Path
+    post_chips_dir: Path, pre_image_uri: str, buildings_uri: str | None, work_dir: Path, cfg
 ) -> tuple[Path, Path, gpd.GeoDataFrame]:
     """Post mosaic of the chips, the pre image fetched over its bounds at the chips' zoom, and the
-    footprints from `buildings_uri`, or from OpenStreetMap when it is None."""
-    chips = sorted(Path(post_chips_dir).rglob("OAM-*.tif"))
+    footprints from `buildings_uri`, or from OpenStreetMap with `cfg.osm_tag_families` when it is None."""
+    chips = sorted(Path(post_chips_dir).glob("OAM-*.tif"))
     if not chips:
-        raise FileNotFoundError(f"no OAM-*.tif chips under {post_chips_dir}")
+        raise FileNotFoundError(f"no OAM-*.tif chips in {post_chips_dir}")
     zoom = parse_chip_name(chips[0].name)[2]
     work_dir.mkdir(parents=True, exist_ok=True)
     post_raster = Path(merge_rasters([str(chip) for chip in chips], str(work_dir / "post.tif")))
@@ -97,9 +102,10 @@ def area_inputs(
     aoi.write_text(json.dumps({"type": "FeatureCollection", "features": [_feature(box(*bounds))]}))
     pre_raster = fetch_raster(pre_image_uri, aoi, work_dir / "pre.tif", zoom=zoom)
     if buildings_uri is None:
-        buildings = pull_osm_buildings(aoi, work_dir / "osm", OSM_BUILDING_FAMILIES)
+        families = [dict(family) for family in cfg.osm_tag_families]
+        buildings = pull_osm_buildings(aoi, work_dir / "osm", families)
     else:
-        buildings = gpd.read_file(buildings_uri, bbox=bounds)
+        buildings = gpd.read_file(buildings_uri, mask=gpd.GeoSeries([box(*bounds)], crs="EPSG:4326"))
     return post_raster, pre_raster, buildings
 
 

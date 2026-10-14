@@ -1,6 +1,7 @@
 """Assign each footprint a damage class + confidence from a dense (C, H, W) probability map (torch-free)."""
 
 import logging
+import math
 from typing import Any
 
 import geopandas as gpd
@@ -14,6 +15,9 @@ from dda.config import DAMAGE_CLASSES, N_DAMAGE_CLASSES
 log = logging.getLogger(__name__)
 
 NO_DATA_CLASS = -1
+NO_DATA_LABEL = "no-data"
+# Minimum share of imaged pixels for a building or labelled area to be scored or trained on.
+MIN_COVERAGE_FRACTION = 0.9
 _ORDINAL = np.arange(N_DAMAGE_CLASSES)
 
 
@@ -88,3 +92,43 @@ def filter_by_confidence(buildings: gpd.GeoDataFrame, threshold: float) -> gpd.G
     """No-data buildings (NaN confidence) are kept."""
     confidence = buildings["damage_confidence"]
     return buildings[confidence.isna() | (confidence >= threshold)]
+
+
+def _footprint_mask(geom: Any, transform: "rasterio.Affine") -> tuple[int, int, np.ndarray]:
+    """Top-left row and column of the footprint's bounding window, unclipped, and its inside mask."""
+    minx, miny, maxx, maxy = geom.bounds
+    c_tl, r_tl = ~transform * (minx, maxy)
+    c_br, r_br = ~transform * (maxx, miny)
+    r0, c0 = math.floor(r_tl), math.floor(c_tl)
+    r1, c1 = math.floor(r_br) + 1, math.floor(c_br) + 1
+    window = rasterio.windows.Window(c0, r0, c1 - c0, r1 - r0)  # ty: ignore[too-many-positional-arguments]
+    window_transform = rasterio.windows.transform(window, transform)
+    inside = geometry_mask([geom], out_shape=(r1 - r0, c1 - c0), transform=window_transform, invert=True)
+    return r0, c0, inside
+
+
+def coverage_fraction(buildings: gpd.GeoDataFrame, valid: np.ndarray, transform) -> np.ndarray:
+    """Per-building fraction of `valid` pixels, with pixels off the grid counted as not valid; each footprint
+    is measured alone so overlaps do not hide one another. Buildings must be in the grid's CRS."""
+    coverage = np.zeros(len(buildings), dtype=np.float32)
+    height, width = valid.shape
+    for index, geom in enumerate(buildings.geometry):
+        r0, c0, inside = _footprint_mask(geom, transform)
+        rr0, cc0 = max(r0, 0), max(c0, 0)
+        rr1, cc1 = min(r0 + inside.shape[0], height), min(c0 + inside.shape[1], width)
+        if not inside.any() or rr1 <= rr0 or cc1 <= cc0:
+            continue
+        imaged = np.zeros(inside.shape, dtype=bool)
+        imaged[rr0 - r0 : rr1 - r0, cc0 - c0 : cc1 - c0] = valid[rr0:rr1, cc0:cc1]
+        coverage[index] = imaged[inside].mean()
+    return coverage
+
+
+def mark_uncovered_as_no_data(scored: gpd.GeoDataFrame, imaged: np.ndarray, transform) -> gpd.GeoDataFrame:
+    """`scored` with buildings under `MIN_COVERAGE_FRACTION` of `imaged` pixels set to the no-data class."""
+    out = scored.copy()
+    uncovered = coverage_fraction(out, imaged, transform) < MIN_COVERAGE_FRACTION
+    out.loc[uncovered, "damage_class"] = NO_DATA_CLASS
+    out.loc[uncovered, "damage"] = NO_DATA_LABEL
+    out.loc[uncovered, "damage_confidence"] = np.nan
+    return out
