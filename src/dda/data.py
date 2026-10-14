@@ -8,14 +8,10 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import v2
 from torchvision.tv_tensors import Image, Mask
 
-from dda.config import N_DAMAGE_CLASSES
+from dda.config import DINOV3_MEAN, DINOV3_STD, N_DAMAGE_CLASSES
 from dda.losses import IGNORE_INDEX
 
 log = logging.getLogger(__name__)
-
-# DINOv3 was pretrained with ImageNet normalisation; a frozen backbone must see the same.
-DINOV3_MEAN = (0.485, 0.456, 0.406)
-DINOV3_STD = (0.229, 0.224, 0.225)
 
 # Field names in the EVER-Z/torchange_xView2 dataset: t1 = pre, t2 = post, t2_mask = damage raster
 # coded 0=background, 1..4 = Joint Damage Scale (no-damage..destroyed).

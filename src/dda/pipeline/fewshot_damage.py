@@ -19,34 +19,13 @@ from rasterio.warp import Resampling
 from rasterio.windows import Window
 from torch.utils.data import DataLoader, Dataset
 
-from dda.config import load_config
-from dda.data import DINOV3_MEAN, DINOV3_STD
+from dda.config import DINOV3_MEAN, DINOV3_STD, load_config, normalize_damage_value
 from dda.infer import resolve_ckpt
 from dda.losses import IGNORE_INDEX
 from dda.model import DinoV3DamageLit
 from dda.pipeline.hub_utils import enable_offline_torch_hub_fallback
 
 log = logging.getLogger(__name__)
-
-DAMAGE_LABEL_MAP: dict[str | int, int] = {
-    "no-damage": 1,
-    "no_damage": 1,
-    "nodamage": 1,
-    "minor-damage": 2,
-    "minor_damage": 2,
-    "minor": 2,
-    "major-damage": 3,
-    "major_damage": 3,
-    "major": 3,
-    "destroyed": 4,
-    "un-classified": 5,
-    "unclassified": 5,
-    1: 1,
-    2: 2,
-    3: 3,
-    4: 4,
-    5: 5,
-}
 
 TINY_DATASET_WARN_THRESHOLD = 20
 MIN_PRE_COVERAGE_PCT = 90
@@ -74,25 +53,6 @@ class FewshotDamageResult:
             "output_dir": str(self.output_dir),
             "strict_head": self.strict_head,
         }
-
-
-def normalize_damage_value(v: Any) -> int:
-    """GeoPandas stringifies mixed-type columns, so numeric strings decode to int first."""
-    if isinstance(v, str):
-        s = v.strip().lower()
-        try:
-            key: str | int = int(s)
-        except ValueError:
-            key = s
-    else:
-        key = int(v)
-    if key not in DAMAGE_LABEL_MAP:
-        raise ValueError(
-            f"labels: unrecognised damage value {v!r}. Expected one of "
-            f"{sorted({k for k in DAMAGE_LABEL_MAP if not isinstance(k, int)})} "
-            f"or integers 1..4 (xBD Joint Damage Scale)."
-        )
-    return DAMAGE_LABEL_MAP[key]
 
 
 def _read_labels(labels_geojson: Path) -> list[tuple[Any, int]]:
@@ -352,7 +312,7 @@ def fit_damage_windows(
     train_bs = min(batch_size, len(train_ds))
     val_bs = min(batch_size, len(val_ds))
     train_loader = DataLoader(train_ds, batch_size=train_bs, shuffle=True, num_workers=0, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=val_bs, shuffle=False, num_workers=0, drop_last=True)
+    val_loader = DataLoader(val_ds, batch_size=val_bs, shuffle=False, num_workers=0)
 
     baseline_trainer = pl.Trainer(
         accelerator="auto",

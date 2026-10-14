@@ -12,11 +12,13 @@ import rasterio
 import rasterio.windows
 import torch
 from omegaconf import DictConfig
-from rasterio.features import geometry_mask, rasterize
+from rasterio.features import geometry_mask
 from rasterio.windows import Window
 
 from dda.config import DAMAGE_CLASSES, N_DAMAGE_CLASSES
-from dda.infer import load_model, radiometric_normalize, sliding_window_prob
+from dda.infer import load_model, sliding_window_prob
+from dda.pool import coverage_fraction
+from dda.tiling import radiometric_normalize
 
 log = logging.getLogger(__name__)
 
@@ -162,8 +164,8 @@ def _process_block(
 
     pre_valid = pre_arr.any(axis=2)
     post_valid = post_arr.any(axis=2)
-    pre_frac = _coverage_fraction(block_buildings, pre_valid, block_transform)
-    post_frac = _coverage_fraction(block_buildings, post_valid, block_transform)
+    pre_frac = coverage_fraction(block_buildings, pre_valid, block_transform)
+    post_frac = coverage_fraction(block_buildings, post_valid, block_transform)
     pre_ok = pre_frac >= damage_cfg.pre_coverage_threshold
     post_ok = post_frac >= damage_cfg.post_coverage_threshold
     valid_mask = pre_ok & post_ok
@@ -193,27 +195,6 @@ def _process_block(
 
     merged = pd.concat([scored, no_pre_buildings, no_post_buildings], ignore_index=True)
     return gpd.GeoDataFrame(merged, geometry="geometry", crs=scored.crs)
-
-
-def _coverage_fraction(buildings: gpd.GeoDataFrame, valid: np.ndarray, transform) -> np.ndarray:
-    """Rasterize buildings on the block grid, return per-building fraction of valid pixels."""
-    n = len(buildings)
-    ids = np.arange(1, n + 1, dtype=np.int32)
-    id_raster = rasterize(
-        [(geom, i) for geom, i in zip(buildings.geometry, ids, strict=True)],
-        out_shape=valid.shape,
-        transform=transform,
-        fill=0,
-        dtype="int32",
-    )
-    flat_ids = id_raster.ravel()
-    flat_valid = valid.ravel().astype(np.float64)
-    totals = np.bincount(flat_ids, minlength=n + 1)[1:]
-    valids = np.bincount(flat_ids, weights=flat_valid, minlength=n + 1)[1:]
-    coverage = np.zeros(n, dtype=np.float32)
-    nonzero = totals > 0
-    coverage[nonzero] = (valids[nonzero] / totals[nonzero]).astype(np.float32)
-    return coverage
 
 
 def _label_no_data(buildings: gpd.GeoDataFrame, label: str) -> gpd.GeoDataFrame:

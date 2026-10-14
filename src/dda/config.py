@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -9,6 +9,48 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # xBD Joint Damage Scale; background is handled by the localization head, not a damage class.
 DAMAGE_CLASSES = ("no-damage", "minor-damage", "major-damage", "destroyed")
 N_DAMAGE_CLASSES = len(DAMAGE_CLASSES)
+
+DINOV3_MEAN = (0.485, 0.456, 0.406)
+DINOV3_STD = (0.229, 0.224, 0.225)
+
+DAMAGE_LABEL_MAP: dict[str | int, int] = {
+    "no-damage": 1,
+    "no_damage": 1,
+    "nodamage": 1,
+    "minor-damage": 2,
+    "minor_damage": 2,
+    "minor": 2,
+    "major-damage": 3,
+    "major_damage": 3,
+    "major": 3,
+    "destroyed": 4,
+    "un-classified": 5,
+    "unclassified": 5,
+    1: 1,
+    2: 2,
+    3: 3,
+    4: 4,
+    5: 5,
+}
+
+
+def normalize_damage_value(v: Any) -> int:
+    """GeoPandas stringifies mixed-type columns, so numeric strings decode to int first."""
+    if isinstance(v, str):
+        s = v.strip().lower()
+        try:
+            key: str | int = int(s)
+        except ValueError:
+            key = s
+    else:
+        key = int(v)
+    if key not in DAMAGE_LABEL_MAP:
+        raise ValueError(
+            f"labels: unrecognised damage value {v!r}. Expected one of "
+            f"{sorted({k for k in DAMAGE_LABEL_MAP if not isinstance(k, int)})} "
+            f"or integers 1..4 (xBD Joint Damage Scale)."
+        )
+    return DAMAGE_LABEL_MAP[key]
 
 
 @dataclass
