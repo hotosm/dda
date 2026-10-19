@@ -101,6 +101,16 @@ def test_windows_fail_when_a_pre_chip_is_missing(tmp_path):
         windows_from_chips(tmp_path / "post", tmp_path / "pre", labels, [name], CFG)
 
 
+def test_windows_fail_when_a_pre_chip_is_offset_from_its_post_chip(tmp_path):
+    name = _write_chip(tmp_path / "post", X, Y, seed=1)
+    _write_chip(tmp_path / "pre", X, Y, seed=2)
+    with rasterio.open(tmp_path / "pre" / name, "r+") as pre:
+        pre.transform = pre.transform * rasterio.Affine.translation(CHIP / 2, 0)
+    labels = _labels([(_tile_center_square(X, Y), "destroyed")])
+    with pytest.raises(ValueError, match="same area"):
+        windows_from_chips(tmp_path / "post", tmp_path / "pre", labels, [name], CFG)
+
+
 def _area_with_pre_image(tmp_path: Path) -> Path:
     """Post chips at (X, Y) and (X + 1, Y), and a pre GeoTIFF that covers both with a margin."""
     for x in (X, X + 1):

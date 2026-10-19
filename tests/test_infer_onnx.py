@@ -10,6 +10,7 @@ from rasterio.transform import from_origin
 from shapely.geometry import box
 from torch import nn
 
+from dda import infer
 from dda.config import DINOV3_MEAN, DINOV3_STD, N_DAMAGE_CLASSES
 from dda.export import _DamageHeadOnly
 from dda.infer import sliding_window_prob
@@ -129,6 +130,64 @@ def test_predict_damage_onnx_marks_buildings_over_a_pre_image_gap_as_no_data(tmp
     assert actual["damage"].iloc[0] == "no-data"
     assert actual["damage_class"].iloc[0] == NO_DATA_CLASS
     assert np.isnan(actual["damage_confidence"].iloc[0])
+    assert actual["damage_class"].iloc[1] != NO_DATA_CLASS
+
+
+def test_torch_predict_damage_marks_buildings_over_a_pre_image_gap_as_no_data(tmp_path, monkeypatch):
+    rasters = _write_pair(tmp_path, blank_pre_columns=slice(0, 40))
+    torch.manual_seed(0)
+    net = _PairConv().eval()
+    monkeypatch.setattr(infer, "load_model", lambda *args, **kwargs: net)
+    BUILDINGS.to_file(tmp_path / "buildings.geojson")
+
+    out = infer.predict_damage(
+        CFG,
+        "unused.ckpt",
+        rasters["post"],
+        tmp_path / "buildings.geojson",
+        tmp_path / "out.geojson",
+        pre_raster=rasters["pre"],
+        device="cpu",
+    )
+
+    actual = gpd.read_file(out)
+    assert actual["damage_class"].iloc[0] == NO_DATA_CLASS
+    assert actual["damage_class"].iloc[1] != NO_DATA_CLASS
+
+
+class _PostOnly(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.post = nn.Conv2d(3, N_DAMAGE_CLASSES, kernel_size=3, padding=1)
+
+    def forward(self, post: torch.Tensor, pre: None) -> tuple[torch.Tensor, torch.Tensor]:
+        dmg = self.post(post)
+        return dmg[:, :1], dmg
+
+
+def test_torch_predict_damage_without_pre_marks_buildings_over_a_post_image_gap_as_no_data(
+    tmp_path, monkeypatch
+):
+    rasters = _write_pair(tmp_path)
+    with rasterio.open(rasters["post"], "r+") as post:
+        pixels = post.read()
+        pixels[:, :, :40] = 0
+        post.write(pixels)
+    torch.manual_seed(0)
+    monkeypatch.setattr(infer, "load_model", lambda *args, **kwargs: _PostOnly().eval())
+    BUILDINGS.to_file(tmp_path / "buildings.geojson")
+
+    out = infer.predict_damage(
+        CFG,
+        "unused.ckpt",
+        rasters["post"],
+        tmp_path / "buildings.geojson",
+        tmp_path / "out.geojson",
+        device="cpu",
+    )
+
+    actual = gpd.read_file(out)
+    assert actual["damage_class"].iloc[0] == NO_DATA_CLASS
     assert actual["damage_class"].iloc[1] != NO_DATA_CLASS
 
 
