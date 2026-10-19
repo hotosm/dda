@@ -54,7 +54,7 @@ def assign_damage(
         r0, r1 = max(0, int(r_tl)), min(height, int(r_br) + 1)
         if c1 <= c0 or r1 <= r0:
             classes.append(NO_DATA_CLASS)
-            labels.append("no-data")
+            labels.append(NO_DATA_LABEL)
             confs.append(float("nan"))
             continue
         window = rasterio.windows.Window(c0, r0, c1 - c0, r1 - r0)  # ty: ignore[too-many-positional-arguments]
@@ -62,7 +62,7 @@ def assign_damage(
         inside = geometry_mask([geom], out_shape=(r1 - r0, c1 - c0), transform=win_t, invert=True)
         if not inside.any():
             classes.append(NO_DATA_CLASS)
-            labels.append("no-data")
+            labels.append(NO_DATA_LABEL)
             confs.append(float("nan"))
             continue
         pix = prob[:, r0:r1, c0:c1][:, inside]

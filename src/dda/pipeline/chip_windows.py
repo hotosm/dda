@@ -80,6 +80,9 @@ def _read_block(
                     f"chip {name} is {post_src.width}x{post_src.height} px; the model window takes "
                     f"2x2 blocks of {chip_size} px chips"
                 )
+            same_area = np.allclose(pre_src.bounds, post_src.bounds, rtol=0, atol=post_src.res[0] / 2)
+            if pre_src.crs != post_src.crs or not same_area:
+                raise ValueError(f"pre chip {name} does not cover the same area as its post chip")
             post[cells] = post_src.read([1, 2, 3])
             pre[cells] = pre_src.read([1, 2, 3], out_shape=(3, chip_size, chip_size))
     return post, pre, transform, crs

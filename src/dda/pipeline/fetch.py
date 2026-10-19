@@ -55,6 +55,8 @@ def fetch_raster(source: str, aoi_geojson: Path, out_path: Path, zoom: int = 19)
 
 
 def _is_cog_url(url: str) -> bool:
+    if "{z}" in url:
+        return False
     lower = url.lower()
     return lower.endswith(".tif") or lower.endswith(".tiff") or url.startswith("s3://")
 

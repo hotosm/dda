@@ -9,29 +9,23 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
-import rasterio.windows
 import torch
 from omegaconf import DictConfig
-from rasterio.features import geometry_mask
 from rasterio.windows import Window
 
-from dda.config import DAMAGE_CLASSES, N_DAMAGE_CLASSES
 from dda.infer import load_model, sliding_window_prob
-from dda.pool import coverage_fraction
+from dda.pool import MIN_COVERAGE_FRACTION, NO_DATA_CLASS, NO_DATA_LABEL, assign_damage, coverage_fraction
 from dda.tiling import radiometric_normalize
 
 log = logging.getLogger(__name__)
-
-NO_DATA_CLASS = -1
-NO_DATA_LABEL = "no-data"
 
 
 @dataclass
 class DamageConfig:
     core_px: int = 4096
     halo_px: int = 512
-    pre_coverage_threshold: float = 0.9
-    post_coverage_threshold: float = 0.9
+    pre_coverage_threshold: float = MIN_COVERAGE_FRACTION
+    post_coverage_threshold: float = MIN_COVERAGE_FRACTION
 
 
 def run_damage_blocked(
@@ -185,10 +179,11 @@ def _process_block(
             cfg.temperature,
             device,
         )
-        scored = _assign_from_prob(
-            prob=prob,
-            transform=block_transform,
-            buildings=covered_buildings,
+        scored = assign_damage(
+            prob,
+            block_transform,
+            covered_buildings.crs,
+            covered_buildings,
             pool_op=cfg.pool_op,
             percentile=cfg.pool_percentile,
         )
@@ -213,59 +208,3 @@ def _empty_from_template(template: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         if col not in empty.columns:
             empty[col] = pd.Series(dtype=dtype)
     return empty
-
-
-def _assign_from_prob(
-    *,
-    prob: np.ndarray,
-    transform,
-    buildings: gpd.GeoDataFrame,
-    pool_op: str,
-    percentile: float,
-) -> gpd.GeoDataFrame:
-    """Percentile-pool probs inside each footprint; assign damage_class, damage, damage_confidence."""
-    height, width = prob.shape[1:]
-    inv = ~transform
-    out = buildings.copy()
-    ordinal = np.arange(N_DAMAGE_CLASSES)
-    classes, labels, confs = [], [], []
-
-    for geom in out.geometry:
-        minx, miny, maxx, maxy = geom.bounds
-        c_tl, r_tl = inv * (minx, maxy)
-        c_br, r_br = inv * (maxx, miny)
-        c0, c1 = max(0, int(c_tl)), min(width, int(c_br) + 1)
-        r0, r1 = max(0, int(r_tl)), min(height, int(r_br) + 1)
-        if c1 <= c0 or r1 <= r0:
-            classes.append(NO_DATA_CLASS)
-            labels.append(NO_DATA_LABEL)
-            confs.append(float("nan"))
-            continue
-        window = Window(c0, r0, c1 - c0, r1 - r0)  # ty: ignore[too-many-positional-arguments]
-        win_t = rasterio.windows.transform(window, transform)
-        inside = geometry_mask([geom], out_shape=(r1 - r0, c1 - c0), transform=win_t, invert=True)
-        if not inside.any():
-            classes.append(NO_DATA_CLASS)
-            labels.append(NO_DATA_LABEL)
-            confs.append(float("nan"))
-            continue
-        pix = prob[:, r0:r1, c0:c1][:, inside]
-        cls = _pool_pixels(pix, pool_op, percentile, ordinal)
-        classes.append(cls)
-        labels.append(DAMAGE_CLASSES[cls])
-        confs.append(float(pix[cls].mean()))
-
-    out["damage_class"] = classes
-    out["damage"] = labels
-    out["damage_confidence"] = confs
-    return out
-
-
-def _pool_pixels(pix: np.ndarray, pool_op: str, percentile: float, ordinal: np.ndarray) -> int:
-    if pool_op == "mean":
-        return int(pix.mean(axis=1).argmax())
-    if pool_op == "max":
-        return int(pix.argmax(axis=0).max())
-    severity = (ordinal[:, None] * pix).sum(axis=0)
-    sev = float(np.percentile(severity, percentile))
-    return int(np.clip(round(sev), 0, N_DAMAGE_CLASSES - 1))

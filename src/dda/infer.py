@@ -12,7 +12,7 @@ from huggingface_hub import hf_hub_download
 from dda.config import DINOV3_MEAN, DINOV3_STD, N_DAMAGE_CLASSES
 from dda.hf_utils import resolve_sha_pinned_ckpt
 from dda.model import DinoV3DamageLit
-from dda.pool import assign_damage
+from dda.pool import assign_damage, mark_uncovered_as_no_data
 from dda.tiling import blend_window, gaussian_kernel, pad_tile, read_aligned_pair, window_origins
 
 log = logging.getLogger(__name__)
@@ -151,6 +151,8 @@ def predict_damage(
         pool_op=cfg.pool_op,
         percentile=cfg.pool_percentile,
     )
+    imaged = post.any(axis=2) if pre is None else post.any(axis=2) & pre.any(axis=2)
+    gdf = mark_uncovered_as_no_data(gdf, imaged, transform)
 
     from dda.pipeline.geowrite import write_dual
 

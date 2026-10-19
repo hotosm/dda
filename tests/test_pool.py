@@ -44,6 +44,7 @@ def test_assign_damage_uniform_and_nodata():
     assert out.iloc[0]["damage"] == "destroyed"
     assert out.iloc[0]["damage_confidence"] > 0.9
     assert out.iloc[1]["damage_class"] == -1
+    assert out.iloc[1]["damage"] == "no-data"
     assert np.isnan(out.iloc[1]["damage_confidence"])
     assert set(out.columns) == {"damage_class", "damage", "damage_confidence", "geometry"}
 

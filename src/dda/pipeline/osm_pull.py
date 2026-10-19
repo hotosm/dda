@@ -44,14 +44,9 @@ def pull_osm_buildings(
             log.info("rda family %s: 0 features", key)
             continue
         if "osm_id" not in gdf.columns:
-            log.warning(
-                "rda family %s: %d features but missing osm_id (got %s); dropping cache and skipping",
-                key,
-                len(gdf),
-                gdf.columns.tolist(),
-            )
-            zip_path.unlink(missing_ok=True)
-            continue
+            # The cached snapshot is removed so a rerun requests a fresh one.
+            zip_path.unlink()
+            raise RuntimeError(f"rda family {key} has no osm_id column; got {list(gdf.columns)}")
         frames.append(_shape_family_frame(gdf, key=key, status=status))
         log.info("rda family %s (%s): %d features", key, status, len(frames[-1]))
 
