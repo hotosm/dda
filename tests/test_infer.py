@@ -12,7 +12,7 @@ def test_stretch_expands_compressed_range_to_full_scale():
     image = rng.integers(100, 141, size=(64, 64, 3), dtype=np.uint8)
     out = radiometric_normalize(image)
     assert out.dtype == np.uint8
-    assert out.min() == 1  # zero is reserved for pixels without imagery
+    assert out.min() == 1  # zero is reserved for pixels outside the imagery
     assert out.max() == 255
     assert out.std() > image.std()  # contrast increased
 

@@ -94,32 +94,37 @@ def filter_by_confidence(buildings: gpd.GeoDataFrame, threshold: float) -> gpd.G
     return buildings[confidence.isna() | (confidence >= threshold)]
 
 
-def _footprint_mask(geom: Any, transform: "rasterio.Affine") -> tuple[int, int, np.ndarray]:
+def _footprint_mask(footprint: Any, transform: "rasterio.Affine") -> tuple[int, int, np.ndarray]:
     """Top-left row and column of the footprint's bounding window, unclipped, and its inside mask."""
-    minx, miny, maxx, maxy = geom.bounds
-    c_tl, r_tl = ~transform * (minx, maxy)
-    c_br, r_br = ~transform * (maxx, miny)
-    r0, c0 = math.floor(r_tl), math.floor(c_tl)
-    r1, c1 = math.floor(r_br) + 1, math.floor(c_br) + 1
-    window = rasterio.windows.Window(c0, r0, c1 - c0, r1 - r0)  # ty: ignore[too-many-positional-arguments]
+    min_x, min_y, max_x, max_y = footprint.bounds
+    left_col, top_row = ~transform * (min_x, max_y)
+    right_col, bottom_row = ~transform * (max_x, min_y)
+    top, left = math.floor(top_row), math.floor(left_col)
+    bottom, right = math.floor(bottom_row) + 1, math.floor(right_col) + 1
+    window = rasterio.windows.Window(left, top, right - left, bottom - top)  # ty: ignore[too-many-positional-arguments]
     window_transform = rasterio.windows.transform(window, transform)
-    inside = geometry_mask([geom], out_shape=(r1 - r0, c1 - c0), transform=window_transform, invert=True)
-    return r0, c0, inside
+    inside = geometry_mask(
+        [footprint], out_shape=(bottom - top, right - left), transform=window_transform, invert=True
+    )
+    return top, left, inside
 
 
 def coverage_fraction(buildings: gpd.GeoDataFrame, valid: np.ndarray, transform) -> np.ndarray:
-    """Per-building fraction of `valid` pixels, with pixels off the grid counted as not valid; each footprint
-    is measured alone so overlaps do not hide one another. Buildings must be in the grid's CRS."""
+    """Per-building fraction of `valid` pixels, counting off-grid pixels as invalid; each footprint is
+    measured separately, so overlapping footprints keep full area. Buildings must be in the grid's CRS."""
     coverage = np.zeros(len(buildings), dtype=np.float32)
     height, width = valid.shape
-    for index, geom in enumerate(buildings.geometry):
-        r0, c0, inside = _footprint_mask(geom, transform)
-        rr0, cc0 = max(r0, 0), max(c0, 0)
-        rr1, cc1 = min(r0 + inside.shape[0], height), min(c0 + inside.shape[1], width)
-        if not inside.any() or rr1 <= rr0 or cc1 <= cc0:
+    for index, footprint in enumerate(buildings.geometry):
+        top, left, inside = _footprint_mask(footprint, transform)
+        clipped_top, clipped_left = max(top, 0), max(left, 0)
+        clipped_bottom = min(top + inside.shape[0], height)
+        clipped_right = min(left + inside.shape[1], width)
+        if not inside.any() or clipped_bottom <= clipped_top or clipped_right <= clipped_left:
             continue
         imaged = np.zeros(inside.shape, dtype=bool)
-        imaged[rr0 - r0 : rr1 - r0, cc0 - c0 : cc1 - c0] = valid[rr0:rr1, cc0:cc1]
+        imaged[clipped_top - top : clipped_bottom - top, clipped_left - left : clipped_right - left] = valid[
+            clipped_top:clipped_bottom, clipped_left:clipped_right
+        ]
         coverage[index] = imaged[inside].mean()
     return coverage
 

@@ -48,7 +48,7 @@ def normalize_damage_value(v: Any) -> int:
         raise ValueError(
             f"labels: unrecognised damage value {v!r}. Expected one of "
             f"{sorted({k for k in DAMAGE_LABEL_MAP if not isinstance(k, int)})} "
-            f"or integers 1..4 (xBD Joint Damage Scale)."
+            f"or integers 1..5 (xBD damage codes, 5 for un-classified)."
         )
     return DAMAGE_LABEL_MAP[key]
 

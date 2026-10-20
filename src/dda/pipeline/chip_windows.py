@@ -36,7 +36,7 @@ def windows_from_chips(
     post_dir: Path, pre_dir: Path, labels: gpd.GeoDataFrame, chip_names: Iterable[str], cfg
 ) -> list[dict[str, Any]]:
     """One `fit_damage_windows` window per 2x2 tile block whose labels are at least `MIN_COVERAGE_FRACTION`
-    imaged in post and pre; labels off the imagery become background, and each window is stretched alone."""
+    imaged in post and pre; off-imagery labels become background; stretched if `cfg.radiometric_normalize`."""
     post_dir, pre_dir = Path(post_dir), Path(pre_dir)
     blocks: dict[tuple[int, int, int], list[tuple[str, int, int]]] = defaultdict(list)
     for name in chip_names:
