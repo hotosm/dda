@@ -86,8 +86,9 @@ Training and dev-time (`dda train`, `dda predict`, `dda export`, `dda evaluate`,
 are documented in the per-command `--help`. `dda export` writes an ONNX model with `post` and
 `pre` inputs and a `damage_logits` output, and `dda.onnx_infer.predict_damage_onnx` runs it with
 onnxruntime and assigns a damage class to each building. `predict_damage_onnx` and `dda predict`
-mark buildings with less than 90% imaged pixels (pre and post, or post alone when no pre raster is
-given) as no-data. `dda.onnx_infer` and `dda.pipeline.chip_windows` import without torch.
+mark buildings with less than 90% imaged pixels (pre and post, or post alone when `dda predict` runs
+with `--pre-raster` omitted) as no-data. Importing `dda.onnx_infer` or `dda.pipeline.chip_windows` leaves torch,
+lightning and terratorch unloaded.
 
 For fAIr datasets of `OAM-{x}-{y}-{z}.tif` chips, `dda.pipeline.chip_windows` builds training
 windows from post and pre chips and prepares the inference inputs (post mosaic, pre image,

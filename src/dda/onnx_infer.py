@@ -1,4 +1,4 @@
-"""Torch-free damage inference over the ONNX export of `dda.export.export_onnx`."""
+"""Damage inference with onnxruntime over the ONNX export of `dda.export.export_onnx`."""
 
 from pathlib import Path
 
@@ -22,24 +22,24 @@ def sliding_window_prob_onnx(
 ) -> np.ndarray:
     """`dda.infer.sliding_window_prob` for the ONNX export, one window per run."""
     height, width = post.shape[:2]
-    prob_acc = np.zeros((N_DAMAGE_CLASSES, height, width), dtype=np.float32)
-    weight_acc = np.zeros((height, width), dtype=np.float32)
+    probability_sum = np.zeros((N_DAMAGE_CLASSES, height, width), dtype=np.float32)
+    weight_sum = np.zeros((height, width), dtype=np.float32)
     kernel = gaussian_kernel(window)
     mean = np.asarray(DINOV3_MEAN, dtype=np.float32).reshape(1, 3, 1, 1)
     std = np.asarray(DINOV3_STD, dtype=np.float32).reshape(1, 3, 1, 1)
 
     def normalize(tile: np.ndarray) -> np.ndarray:
-        chw = pad_tile(tile, window).transpose(2, 0, 1)[np.newaxis].astype(np.float32) / 255.0
-        return (chw - mean) / std
+        scaled_tile = pad_tile(tile, window).transpose(2, 0, 1)[np.newaxis].astype(np.float32) / 255.0
+        return (scaled_tile - mean) / std
 
-    for r, c in window_origins(height, width, window, stride):
+    for row, col in window_origins(height, width, window, stride):
         inputs = {
-            "post": normalize(post[r : r + window, c : c + window, :]),
-            "pre": normalize(pre[r : r + window, c : c + window, :]),
+            "post": normalize(post[row : row + window, col : col + window, :]),
+            "pre": normalize(pre[row : row + window, col : col + window, :]),
         }
         logits = np.asarray(session.run(["damage_logits"], inputs)[0])
-        blend_window(prob_acc, weight_acc, softmax(logits[0] / temperature, axis=0), r, c, kernel)
-    return prob_acc / weight_acc
+        blend_window(probability_sum, weight_sum, softmax(logits[0] / temperature, axis=0), row, col, kernel)
+    return probability_sum / weight_sum
 
 
 def predict_damage_onnx(

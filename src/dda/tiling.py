@@ -19,8 +19,8 @@ def gaussian_kernel(size: int, sigma_frac: float = 0.125) -> np.ndarray:
 def radiometric_normalize(
     image: np.ndarray, low_percentile: float = 2.0, high_percentile: float = 98.0
 ) -> np.ndarray:
-    """Per-channel percentile stretch of an RGB scene to the full 8-bit range; disaster imagery arrives
-    uncalibrated with a compressed range that is out of distribution for the model's fixed normalization."""
+    """Per-channel percentile stretch of imaged RGB pixels to 1..255, keeping zero for pixels outside the
+    imagery; disaster imagery arrives uncalibrated and out of distribution for the model's normalization."""
     if image.ndim != 3 or image.shape[2] != 3:
         raise ValueError(f"expected an HxWx3 RGB image, got shape {image.shape}")
     valid = image.any(axis=2)
@@ -76,15 +76,24 @@ def window_origins(height: int, width: int, window: int, stride: int) -> list[tu
 
 
 def blend_window(
-    prob_acc: np.ndarray, weight_acc: np.ndarray, probs: np.ndarray, row: int, col: int, kernel: np.ndarray
+    probability_sum: np.ndarray,
+    weight_sum: np.ndarray,
+    probabilities: np.ndarray,
+    row: int,
+    col: int,
+    kernel: np.ndarray,
 ) -> None:
     """Add one window's (C, window, window) probabilities, Gaussian-weighted and cropped at the image edge."""
     window = kernel.shape[0]
-    height, width = weight_acc.shape
-    h = min(window, height - row)
-    w = min(window, width - col)
-    prob_acc[:, row : row + h, col : col + w] += probs[:, :h, :w] * kernel[:h, :w]
-    weight_acc[row : row + h, col : col + w] += kernel[:h, :w]
+    height, width = weight_sum.shape
+    visible_height = min(window, height - row)
+    visible_width = min(window, width - col)
+    probability_sum[:, row : row + visible_height, col : col + visible_width] += (
+        probabilities[:, :visible_height, :visible_width] * kernel[:visible_height, :visible_width]
+    )
+    weight_sum[row : row + visible_height, col : col + visible_width] += kernel[
+        :visible_height, :visible_width
+    ]
 
 
 def read_aligned_pair(
