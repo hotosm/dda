@@ -14,16 +14,16 @@ from rasterio.merge import merge
 
 from dda.config import load_config
 from dda.infer import load_model, resolve_ckpt, sliding_window_prob
-from dda.pool import assign_damage, filter_by_confidence, parse_confidence_threshold
-from dda.tiling import read_aligned_pair
+from dda.pool import (
+    assign_damage,
+    filter_by_confidence,
+    mark_uncovered_as_no_data,
+    parse_confidence_threshold,
+)
+from dda.tiling import imaged_mask, read_aligned_pair
 
 log = logging.getLogger(__name__)
 
-DEFAULT_PRE_IMAGE_URI = os.environ.get(
-    "DDA_DEFAULT_PRE_IMAGE_URI",
-    "https://api.imagery.hotosm.org/raster/collections/openaerialmap/tiles/WebMercatorQuad/{z}/{x}/{y}"
-    "?ids=6a92f09910691da75dd828c3,6a90c0f1d8f7b27f66739990&assets=visual",
-)
 OSM_API_URL = os.environ.get("DDA_OSM_API_URL", "https://api-prod.raw-data.hotosm.org/v1")
 OSM_BUILDING_FILTER = {
     "tags": {
@@ -110,6 +110,7 @@ def _predict(
         gdf = assign_damage(
             prob, transform, crs, buildings, pool_op=CFG.pool_op, percentile=CFG.pool_percentile
         )
+        gdf = mark_uncovered_as_no_data(gdf, imaged_mask(post, pre), transform)
         gdf = filter_by_confidence(gdf, confidence_threshold)
         keep = ["geometry", "damage", "damage_class", "damage_confidence"]
         keep += [c for c in ("osm_id", "id") if c in gdf.columns]
@@ -150,7 +151,12 @@ class Handler(BaseHTTPRequestHandler):
         bbox = [float(v) for v in payload["bbox"]]
         zoom = int(payload["zoom"])
         params = payload.get("params") or {}
-        pre_image_uri = params.get("pre_image_uri") or DEFAULT_PRE_IMAGE_URI
+        pre_image_uri = params.get("pre_image_uri")
+        if not pre_image_uri:
+            self._json(
+                400, {"error": "params.pre_image_uri is required: a TMS template of pre-event imagery"}
+            )
+            return
         try:
             confidence_threshold = parse_confidence_threshold(params.get("confidence_threshold", 0.0))
         except ValueError as exc:

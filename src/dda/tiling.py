@@ -96,6 +96,12 @@ def blend_window(
     ]
 
 
+def imaged_mask(post: np.ndarray, pre: np.ndarray | None) -> np.ndarray:
+    """Pixels with imagery in post and, when given, in pre."""
+    imaged = post.any(axis=2)
+    return imaged if pre is None else imaged & pre.any(axis=2)
+
+
 def read_aligned_pair(
     cfg, post_raster: str | Path, pre_raster: str | Path | None
 ) -> tuple[np.ndarray, np.ndarray | None, rasterio.Affine, rasterio.crs.CRS]:

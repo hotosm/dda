@@ -191,7 +191,8 @@ def _load_damage_model(cfg, ckpt: Path | None) -> DinoV3DamageLit:
 def evaluate_damage_windows(
     windows: list[dict[str, Any]], ckpt: Path | None = None, batch_size: int = 2
 ) -> dict[str, float]:
-    """Damage macro F1, harmonic damage F1 and localization IoU of `ckpt` on `windows`."""
+    """Damage macro and harmonic F1 over the scored classes, destroyed F1 and localization IoU of `ckpt` on
+    `windows`."""
     model = _load_damage_model(load_config(None), ckpt)
     loader = DataLoader(_ChipDataset(windows), batch_size=min(batch_size, len(windows)), num_workers=0)
     trainer = pl.Trainer(
@@ -204,7 +205,9 @@ def evaluate_damage_windows(
         inference_mode=False,
     )
     metrics = trainer.validate(model, dataloaders=loader, verbose=False)[0]
-    return {name: float(metrics[f"val/{name}"]) for name in ("dmg_macro_f1", "dmg_f1", "loc_iou")}
+    return {
+        name: float(metrics[f"val/{name}"]) for name in ("dmg_macro_f1", "dmg_f1", "destroyed_f1", "loc_iou")
+    }
 
 
 def fit_damage(

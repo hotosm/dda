@@ -9,7 +9,7 @@ from scipy.special import softmax
 
 from dda.config import DINOV3_MEAN, DINOV3_STD, N_DAMAGE_CLASSES
 from dda.pool import assign_damage, mark_uncovered_as_no_data
-from dda.tiling import blend_window, gaussian_kernel, pad_tile, read_aligned_pair, window_origins
+from dda.tiling import blend_window, gaussian_kernel, imaged_mask, pad_tile, read_aligned_pair, window_origins
 
 
 def sliding_window_prob_onnx(
@@ -58,4 +58,4 @@ def predict_damage_onnx(
     scored = assign_damage(
         prob, transform, crs, buildings, pool_op=cfg.pool_op, percentile=cfg.pool_percentile
     )
-    return mark_uncovered_as_no_data(scored, post.any(axis=2) & pre.any(axis=2), transform)
+    return mark_uncovered_as_no_data(scored, imaged_mask(post, pre), transform)
