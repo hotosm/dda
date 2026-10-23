@@ -102,10 +102,13 @@ def _poll_task(task_id: str) -> str:
 
 
 def _extract_geojson(zip_path: Path) -> gpd.GeoDataFrame:
+    """The export GeoJSON of a snapshot zip, which also carries the request's `clipping_boundary.geojson`."""
     with zipfile.ZipFile(zip_path) as zf:
-        names = [n for n in zf.namelist() if n.lower().endswith(".geojson")]
-        if not names:
-            raise RuntimeError(f"rda zip {zip_path} contains no .geojson")
+        names = [
+            n for n in zf.namelist() if n.lower().endswith(".geojson") and n != "clipping_boundary.geojson"
+        ]
+        if len(names) != 1:
+            raise RuntimeError(f"rda zip {zip_path} holds {zf.namelist()}, expected one export GeoJSON")
         with zf.open(names[0]) as fp:
             return gpd.read_file(io.BytesIO(fp.read()))
 

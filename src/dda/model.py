@@ -11,7 +11,7 @@ from terratorch.registry import BACKBONE_REGISTRY
 from torch import nn
 from torchmetrics.classification import BinaryJaccardIndex, MulticlassF1Score
 
-from dda.config import N_DAMAGE_CLASSES
+from dda.config import DAMAGE_CLASSES, N_DAMAGE_CLASSES
 from dda.losses import IGNORE_INDEX, LocalizationLoss, OrdinalDamageLoss
 
 log = logging.getLogger(__name__)
@@ -24,6 +24,20 @@ def _download_ckpt(repo: str, filename: str) -> Path:
 def _harmonic_mean(values: torch.Tensor) -> torch.Tensor:
     """xView2 damage F1: harmonic mean over the per-class F1s, so one floored class collapses it."""
     return values.numel() / (1.0 / (values + 1e-6)).sum()
+
+
+def damage_scores(per_class_f1: torch.Tensor, scored: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Macro and harmonic F1 over the `scored` classes, those labelled or predicted as torchmetrics' macro
+    average keeps them, and the destroyed F1, which is 0 when no pixel is labelled or predicted destroyed."""
+    if not scored.any():
+        raise ValueError("no labelled or predicted building pixel to score")
+    kept = per_class_f1[scored]
+    destroyed = per_class_f1[DAMAGE_CLASSES.index("destroyed")]
+    return {"dmg_macro_f1": kept.mean(), "dmg_f1": _harmonic_mean(kept), "destroyed_f1": destroyed}
+
+
+def _scored_classes(f1: MulticlassF1Score) -> torch.Tensor:
+    return (f1.tp + f1.fp + f1.fn) > 0  # ty: ignore[unsupported-operator]
 
 
 class DinoV3DamageNet(nn.Module):
@@ -210,19 +224,24 @@ class DinoV3DamageLit(LightningModule):
             self.val_dmg_f1.update(preds[valid], damage[valid])  # ty: ignore[invalid-argument-type]
 
     def on_validation_epoch_end(self):
+        # Lightning's two-batch sanity check can hold no building pixel, which damage_scores rejects.
+        if self.trainer.sanity_checking:
+            self.val_dmg_f1.reset()
+            self.val_loc_iou.reset()
+            return
         per_class = self.val_dmg_f1.compute()  # ty: ignore[missing-argument]
-        dmg_f1 = _harmonic_mean(per_class)
-        macro_f1 = per_class.mean()
+        scores = damage_scores(per_class, _scored_classes(self.val_dmg_f1))
         loc_iou = self.val_loc_iou.compute()  # ty: ignore[missing-argument]
-        # Macro is the checkpoint metric; harmonic collapses on any zero-count class in a single-event val.
-        self.log("val/dmg_macro_f1", macro_f1, prog_bar=True)
-        self.log("val/dmg_f1", dmg_f1, prog_bar=True)
+        # Macro is the checkpoint metric.
+        for name, value in scores.items():
+            self.log(f"val/{name}", value, prog_bar=True)
         self.log("val/loc_iou", loc_iou, prog_bar=True)
         log.info(
-            "epoch %d val/dmg_macro_f1=%.4f val/dmg_f1=%.4f loc_iou=%.4f per_class=%s",
+            "epoch %d val/dmg_macro_f1=%.4f val/dmg_f1=%.4f val/destroyed_f1=%.4f loc_iou=%.4f per_class=%s",
             self.current_epoch,
-            float(macro_f1),
-            float(dmg_f1),
+            float(scores["dmg_macro_f1"]),
+            float(scores["dmg_f1"]),
+            float(scores["destroyed_f1"]),
             float(loc_iou),
             [round(float(x), 3) for x in per_class],
         )
@@ -241,8 +260,9 @@ class DinoV3DamageLit(LightningModule):
 
     def on_test_epoch_end(self):
         per_class = self.test_dmg_f1.compute()  # ty: ignore[missing-argument]
-        self.log("test/dmg_macro_f1", per_class.mean())
-        self.log("test/dmg_f1", _harmonic_mean(per_class))
+        scores = damage_scores(per_class, _scored_classes(self.test_dmg_f1))
+        for name, value in scores.items():
+            self.log(f"test/{name}", value)
         self.log("test/loc_iou", self.test_loc_iou.compute())  # ty: ignore[missing-argument]
         log.info("test per_class=%s", [round(float(x), 3) for x in per_class])
         self.test_dmg_f1.reset()

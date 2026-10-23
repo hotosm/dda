@@ -238,7 +238,7 @@ def test_windows_fine_tune_and_evaluate_with_the_damage_model(tmp_path):
     metrics = evaluate_damage_windows(windows[4:], result.best_ckpt)
 
     assert result.best_ckpt.exists()
-    assert set(metrics) == {"dmg_macro_f1", "dmg_f1", "loc_iou"}
+    assert set(metrics) == {"dmg_macro_f1", "dmg_f1", "destroyed_f1", "loc_iou"}
     assert all(0.0 <= value <= 1.0 for value in metrics.values())
 
 
