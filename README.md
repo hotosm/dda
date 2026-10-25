@@ -86,7 +86,7 @@ Serving:
 
 | command | purpose |
 | --- | --- |
-| `dda serve` | HTTP server on `PORT` (8080): `POST /predict` takes TMS templates `image_uri` and `params.pre_image_uri`, a `bbox`, a `zoom` and an optional `params.confidence_threshold`, and grades OSM footprints; `GET /health` |
+| `dda serve` | HTTP server on `PORT` (8080): `POST /predict` takes TMS templates `imagery.post` and `imagery.pre`, a `bbox`, a `zoom` and an optional `params.confidence_threshold`, and grades OSM footprints; `GET /health` |
 
 `/predict` returns a GeoJSON FeatureCollection in EPSG:4326 with `damage`, `damage_class` and
 `damage_confidence`, keeping buildings at or above `confidence_threshold` (default 0) and no-data
@@ -119,12 +119,10 @@ windows; the caller splits them into train and validation sets of at least two w
 Rasters are read as 3-band RGB and cast to 8-bit. Output footprints are in the post raster's CRS,
 and `damage_class` is 0 (`no-damage`) to 3 (`destroyed`), -1 for no-data.
 
-For fAIr chips, `dda.pipeline.chip_windows.area_inputs(post_chips_dir, pre_image_uri, buildings_uri,
-work_dir, cfg)` returns `(post_raster, pre_raster, buildings)`. It mosaics the post chips, fetches
-the pre image over their bounds at the chips' zoom from a COG URL, a TMS template with `{z}/{x}/{y}`
-or a Bing `virtualearth.net` URL, and reads the footprints from `buildings_uri` clipped to the
+For fAIr chips, `dda.pipeline.chip_windows.area_inputs(post_chips_dir, pre_chips_dir, buildings_uri,
+work_dir, cfg)` returns `(post_raster, pre_raster, buildings)`. It mosaics the `OAM-*.tif` chips of
+each directory into `work_dir`, and reads the footprints from `buildings_uri` clipped to the post
 mosaic bounds, or pulls them from OpenStreetMap with `cfg.osm_tag_families` when it is `None`.
-`work_dir` is a `Path`, and an existing `pre.tif` in it is reused.
 
 `dda.onnx_infer.predict_damage_onnx(session, post_raster, pre_raster, buildings, cfg)` takes an
 `onnxruntime.InferenceSession` over the `dda export` file and `cfg` from
