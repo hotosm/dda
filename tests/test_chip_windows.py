@@ -111,31 +111,15 @@ def test_windows_fail_when_a_pre_chip_is_offset_from_its_post_chip(tmp_path):
         windows_from_chips(tmp_path / "post", tmp_path / "pre", labels, [name], CFG)
 
 
-def _area_with_pre_image(tmp_path: Path) -> Path:
-    """Post chips at (X, Y) and (X + 1, Y), and a pre GeoTIFF that covers both with a margin."""
+def _area_chips(tmp_path: Path) -> None:
+    """Post and pre chips at (X, Y) and (X + 1, Y)."""
     for x in (X, X + 1):
-        _write_chip(tmp_path / "chips", x, Y, seed=x)
-    west, south, _, _ = mercantile.bounds(X, Y, ZOOM)
-    _, _, east, north = mercantile.bounds(X + 1, Y, ZOOM)
-    margin = 0.01
-    pre_path = tmp_path / "pre_source.tif"
-    with rasterio.open(
-        pre_path,
-        "w",
-        driver="GTiff",
-        width=400,
-        height=400,
-        count=3,
-        dtype="uint8",
-        crs="EPSG:4326",
-        transform=from_bounds(west - margin, south - margin, east + margin, north + margin, 400, 400),
-    ) as dst:
-        dst.write(np.full((3, 400, 400), 120, dtype=np.uint8))
-    return pre_path
+        _write_chip(tmp_path / "post", x, Y, seed=x)
+        _write_chip(tmp_path / "pre", x, Y, seed=x + 10)
 
 
-def test_area_inputs_mosaic_chips_fetch_pre_over_their_bounds_and_clip_buildings(tmp_path):
-    pre_path = _area_with_pre_image(tmp_path)
+def test_area_inputs_mosaic_post_and_pre_chips_and_clip_buildings(tmp_path):
+    _area_chips(tmp_path)
     west, south, _, _ = mercantile.bounds(X, Y, ZOOM)
     buildings_path = tmp_path / "buildings.geojson"
     inside = _tile_center_square(X, Y)
@@ -143,29 +127,32 @@ def test_area_inputs_mosaic_chips_fetch_pre_over_their_bounds_and_clip_buildings
     _labels([(inside, "inside"), (far, "far")]).to_file(buildings_path, driver="GeoJSON")
 
     post_raster, pre_raster, buildings = area_inputs(
-        tmp_path / "chips", str(pre_path), str(buildings_path), tmp_path / "work", CFG
+        tmp_path / "post", tmp_path / "pre", str(buildings_path), tmp_path / "work", CFG
     )
 
-    with rasterio.open(post_raster) as post:
-        assert (post.width, post.height) == (2 * CHIP, CHIP)
-        post_bounds = post.bounds
-    with rasterio.open(pre_raster) as pre:
-        # The window is snapped to whole source pixels, so its edges sit within one pixel of the chips.
-        pixel = pre.res[0]
-        assert abs(pre.bounds.left - post_bounds.left) <= pixel
-        assert abs(pre.bounds.right - post_bounds.right) <= pixel
+    with rasterio.open(post_raster) as post, rasterio.open(pre_raster) as pre:
+        assert (post.width, post.height) == (pre.width, pre.height) == (2 * CHIP, CHIP)
+        assert pre.bounds == post.bounds
+        assert not np.array_equal(post.read(), pre.read())
     assert list(buildings["damage"]) == ["inside"]
 
 
+def test_area_inputs_require_pre_chips(tmp_path):
+    _write_chip(tmp_path / "post", X, Y, seed=1)
+    (tmp_path / "pre").mkdir()
+    with pytest.raises(FileNotFoundError, match=r"chips in .*/pre$"):
+        area_inputs(tmp_path / "post", tmp_path / "pre", None, tmp_path / "work", CFG)
+
+
 def test_area_inputs_clip_buildings_stored_in_a_projected_crs(tmp_path):
-    pre_path = _area_with_pre_image(tmp_path)
+    _area_chips(tmp_path)
     west, south, _, _ = mercantile.bounds(X, Y, ZOOM)
     far = box(west + 1, south + 1, west + 1.001, south + 1.001)
     buildings_path = tmp_path / "buildings.gpkg"
     _labels([(_tile_center_square(X, Y), "inside"), (far, "far")]).to_crs("EPSG:3857").to_file(buildings_path)
 
     _, _, buildings = area_inputs(
-        tmp_path / "chips", str(pre_path), str(buildings_path), tmp_path / "work", CFG
+        tmp_path / "post", tmp_path / "pre", str(buildings_path), tmp_path / "work", CFG
     )
 
     assert list(buildings["damage"]) == ["inside"]

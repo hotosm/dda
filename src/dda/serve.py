@@ -38,6 +38,8 @@ OSM_BUILDING_FILTER = {
     }
 }
 
+# Named like the inputs of the `dda export` ONNX model.
+IMAGERY_INPUTS = ("post", "pre")
 CFG = load_config(None)
 DEVICE = os.environ.get("DDA_DEVICE") or ("cuda" if __import__("torch").cuda.is_available() else "cpu")
 
@@ -94,12 +96,10 @@ def _fetch_osm_buildings(bbox: list[float], out_dir: str) -> str:
     return str(result)
 
 
-def _predict(
-    image_uri: str, pre_image_uri: str, bbox: list[float], zoom: int, confidence_threshold: float
-) -> dict:
+def _predict(imagery: dict[str, str], bbox: list[float], zoom: int, confidence_threshold: float) -> dict:
     with tempfile.TemporaryDirectory(prefix="dda-serve-") as tmp:
-        post_raster = _download_raster(image_uri, bbox, zoom, tmp, "post")
-        pre_raster = _download_raster(pre_image_uri, bbox, zoom, tmp, "pre")
+        post_raster = _download_raster(imagery["post"], bbox, zoom, tmp, "post")
+        pre_raster = _download_raster(imagery["pre"], bbox, zoom, tmp, "pre")
         buildings_geojson = _fetch_osm_buildings(bbox, tmp)
         post, pre, transform, crs = read_aligned_pair(CFG, post_raster, pre_raster)
 
@@ -146,23 +146,25 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not found"})
             return
         length = int(self.headers.get("Content-Length", 0))
-        payload = json.loads(self.rfile.read(length))
-        image_uri = payload["image_uri"]
-        bbox = [float(v) for v in payload["bbox"]]
-        zoom = int(payload["zoom"])
-        params = payload.get("params") or {}
-        pre_image_uri = params.get("pre_image_uri")
-        if not pre_image_uri:
-            self._json(
-                400, {"error": "params.pre_image_uri is required: a TMS template of pre-event imagery"}
-            )
-            return
         try:
+            payload = json.loads(self.rfile.read(length))
+            imagery = payload.get("imagery")
+            if not isinstance(imagery, dict) or not all(
+                isinstance(imagery.get(name), str) and imagery[name] for name in IMAGERY_INPUTS
+            ):
+                raise ValueError('imagery requires TMS templates for post and pre: {"post": ..., "pre": ...}')
+            bbox = [float(v) for v in payload["bbox"]]
+            if len(bbox) != 4:
+                raise ValueError("bbox needs 4 numbers: west, south, east, north")
+            zoom = int(payload["zoom"])
+            params = payload.get("params") or {}
+            if not isinstance(params, dict):
+                raise TypeError("params must be an object")
             confidence_threshold = parse_confidence_threshold(params.get("confidence_threshold", 0.0))
-        except ValueError as exc:
-            self._json(400, {"error": str(exc)})
+        except (KeyError, TypeError, ValueError) as exc:
+            self._json(400, {"error": f"invalid request: {exc}"})
             return
-        result = _predict(image_uri, pre_image_uri, bbox, zoom, confidence_threshold)
+        result = _predict(imagery, bbox, zoom, confidence_threshold)
         self._json(200, result)
 
 

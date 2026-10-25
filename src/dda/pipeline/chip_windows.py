@@ -16,7 +16,6 @@ from rasterio.warp import transform_bounds
 from shapely.geometry import box, mapping
 
 from dda.config import normalize_damage_value
-from dda.pipeline.fetch import fetch_raster
 from dda.pipeline.osm_pull import pull_osm_buildings
 from dda.pool import MIN_COVERAGE_FRACTION
 from dda.tiling import radiometric_normalize
@@ -89,27 +88,31 @@ def _read_block(
 
 
 def area_inputs(
-    post_chips_dir: Path, pre_image_uri: str, buildings_uri: str | None, work_dir: Path, cfg
+    post_chips_dir: Path, pre_chips_dir: Path, buildings_uri: str | None, work_dir: Path, cfg
 ) -> tuple[Path, Path, gpd.GeoDataFrame]:
-    """Post mosaic of the chips, the pre image fetched over its bounds at the chips' zoom, and the
-    footprints from `buildings_uri`, or from OpenStreetMap with `cfg.osm_tag_families` when it is None."""
-    chips = sorted(Path(post_chips_dir).glob("OAM-*.tif"))
-    if not chips:
-        raise FileNotFoundError(f"no OAM-*.tif chips in {post_chips_dir}")
-    zoom = parse_chip_name(chips[0].name)[2]
+    """Post and pre mosaics of the chips, and the footprints over the post mosaic from `buildings_uri`,
+    or from OpenStreetMap with `cfg.osm_tag_families` when it is None."""
+    work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
-    post_raster = Path(merge_rasters([str(chip) for chip in chips], str(work_dir / "post.tif")))
+    post_raster = _mosaic_chips(post_chips_dir, work_dir / "post.tif")
+    pre_raster = _mosaic_chips(pre_chips_dir, work_dir / "pre.tif")
     with rasterio.open(post_raster) as src:
         bounds = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
     aoi = work_dir / "aoi.geojson"
     aoi.write_text(json.dumps({"type": "FeatureCollection", "features": [_feature(box(*bounds))]}))
-    pre_raster = fetch_raster(pre_image_uri, aoi, work_dir / "pre.tif", zoom=zoom)
     if buildings_uri is None:
         families = [dict(family) for family in cfg.osm_tag_families]
         buildings = pull_osm_buildings(aoi, work_dir / "osm", families)
     else:
         buildings = gpd.read_file(buildings_uri, mask=gpd.GeoSeries([box(*bounds)], crs="EPSG:4326"))
     return post_raster, pre_raster, buildings
+
+
+def _mosaic_chips(chips_dir: Path, out_path: Path) -> Path:
+    chips = sorted(Path(chips_dir).glob("OAM-*.tif"))
+    if not chips:
+        raise FileNotFoundError(f"no OAM-*.tif chips in {chips_dir}")
+    return Path(merge_rasters([str(chip) for chip in chips], str(out_path)))
 
 
 def _feature(geometry) -> dict[str, Any]:
